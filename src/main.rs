@@ -1,38 +1,23 @@
 use bevy::prelude::*;
 
-struct Position {
-    x: f32,
-    y: f32,
-}
-
-fn print_position_system(position: &Position) {
-    println!("Pos: {}, {}", position.x, position.y);
-}
-
-struct Entity(u64);
-
-fn hello_world() {
-    println!("hello world!");
-}
-
-struct Person;
-struct Name(String);
-
-fn add_people(mut commands: Commands) {
-    commands
-        .spawn((Person, Name("11".to_string())))
-        .spawn((Person, Name("22".to_string())));
-}
-
-fn greet_people(_p: &Person, name: &Name) {
-    println!("hello {}", name.0);
-}
-
 fn main() {
     App::build()
+        .add_resource(Msaa { samples: 4 })
         .add_plugins(DefaultPlugins)
-        .add_startup_system(add_people.system())
-        .add_system(hello_world.system())
-        .add_system(greet_people.system())
+        .add_startup_system(setup.system())
         .run();
+}
+
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands
+        .spawn_scene(asset_server.load("models/FlightHelmet/FlightHelmet.gltf"))
+        .spawn(LightComponents {
+            transform: Transform::from_translation(Vec3::new(4.0, 5.0, 4.0)),
+            ..Default::default()
+        })
+        .spawn(Camera3dComponents {
+            transform: Transform::from_translation(Vec3::new(0.7, 0.7, 1.0))
+                .looking_at(Vec3::new(0.0, 0.3, 0.0), Vec3::unit_y()),
+            ..Default::default()
+        });
 }
