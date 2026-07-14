@@ -1,0 +1,24 @@
+{
+  "name": "@tofu/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@colyseus/core": "0.17.44",
+    "@colyseus/schema": "4.0.27",
+    "@colyseus/ws-transport": "0.17.13",
+    "@tofu/protocol": "workspace:*",
+    "express": "5.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "tsx": "4.23.1",
+    "typescript": "6.0.3"
+  }
+}

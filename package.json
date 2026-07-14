@@ -1,0 +1,19 @@
+{
+  "name": "tofu-arena",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.3",
+  "scripts": {
+    "dev": "concurrently -n server,client -c magenta,cyan \"pnpm --filter @tofu/server dev\" \"pnpm --filter @tofu/client dev\"",
+    "build": "pnpm -r build",
+    "check": "pnpm -r check",
+    "smoke": "tsx scripts/smoke-multiplayer.ts"
+  },
+  "devDependencies": {
+    "@colyseus/sdk": "0.17.43",
+    "@tofu/protocol": "workspace:*",
+    "concurrently": "10.0.3",
+    "tsx": "4.23.1",
+    "typescript": "6.0.3"
+  }
+}

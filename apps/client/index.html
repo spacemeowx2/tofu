@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tofu Arena</title>
+  </head>
+  <body>
+    <canvas id="game" tabindex="0" aria-label="豆腐竞技场游戏画面"></canvas>
+    <div id="hud">
+      <div class="brand">
+        <span class="brand-mark">豆</span>
+        <div><strong>TOFU ARENA</strong><small>multiplayer hello world</small></div>
+      </div>
+      <div id="status" class="status">正在连接豆腐服务器…</div>
+      <div id="players" class="players"></div>
+      <div id="controls" class="controls">正在检测鼠标控制模式…</div>
+      <div id="feed" class="feed"></div>
+      <div id="crosshair"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

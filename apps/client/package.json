@@ -1,0 +1,20 @@
+{
+  "name": "@tofu/client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@babylonjs/core": "9.16.1",
+    "@colyseus/sdk": "0.17.43",
+    "@tofu/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.1.4"
+  }
+}
