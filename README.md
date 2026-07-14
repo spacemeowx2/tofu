@@ -2,6 +2,8 @@
 
 一个 Babylon.js + Colyseus 的多人射击 Hello World。玩家以豆腐形象进入同一张地图，移动、发射豆子弹，并由服务器判定命中和扣血。
 
+当前实现是用于验证操作和战斗闭环的权威服务器原型。目标架构将迁移为 WebRTC P2P、Rapier 碰撞和独立墨水归属系统，详细决策及验证门槛见 [ADR 0001：P2P 联机与物理引擎架构](docs/architecture/0001-p2p-networking-and-physics.md)。
+
 ## 运行
 
 ```bash
@@ -34,11 +36,11 @@ pnpm smoke
 
 `pnpm smoke` 会创建一个独立房间，让两个程序化客户端靠近并射击，断言目标生命值从 100 降到 75。
 
-## 当前架构边界
+## 当前原型边界
 
 - `apps/client`：Babylon.js 场景、豆腐渲染、输入、HUD。
 - `apps/server`：Colyseus 权威房间、移动、子弹、碰撞、扣血和复活。
 - `packages/protocol`：客户端和服务器共享的消息、常量与地图障碍数据。
 - `scripts/smoke-multiplayer.ts`：真实 WebSocket 双客户端烟雾测试。
 
-客户端不直接修改位置或血量。服务器以 30Hz 推进模拟并以 20Hz 同步状态，为后续加入涂地事件、客户端预测和延迟补偿保留清晰的所有权边界。
+客户端不直接修改位置或血量。服务器以 30Hz 推进模拟并以 20Hz 同步状态。这一实现用于 smoke test 和迁移前对照，不代表最终联机所有权；P2P 迁移将在 ADR 定义的技术 spike 通过后开始。
