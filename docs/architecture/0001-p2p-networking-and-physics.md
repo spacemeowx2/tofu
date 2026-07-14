@@ -1,6 +1,6 @@
 # ADR 0001: P2P 联机与物理引擎架构
 
-- 状态：暂定采用，需通过技术 spike 后正式确认
+- 状态：采用；peer-owned relay demo 已落地，WebRTC adapter 待 spike
 - 日期：2026-07-14
 - 范围：浏览器客户端、联机协议、物理碰撞、涂地同步
 
@@ -10,7 +10,7 @@ Tofu Arena 的目标是制作一个开源的 Web 多人涂地射击项目。核�
 
 项目希望参考 Splatoon 的 P2P 联机思路，而不是把游戏模拟长期托管在权威服务器上。首版采用 `honest-peer` 假设，优先解决正常玩家在延迟、丢包、NAT 和断线条件下的正确联机；恶意客户端检测和裁决留给后续社区方案，但协议必须从一开始支持记录、回放、校验和替换裁决模块。
 
-当前 Hello World 使用 Babylon.js 客户端和 Colyseus 权威房间。它是控制、射击和扣血的验证原型，不代表目标架构。
+当前 Hello World 已改为 peer-owned simulation。Colyseus Room 只维护 roster、队伍、coordinator epoch 并转发不透明的 `PeerPacket`，不推进模拟，也不保存玩家、子弹或血量世界。
 
 ## 参考边界
 
@@ -38,25 +38,44 @@ Splatoon 没有公开完整联网实现。可获得的 Splatoon 2 逆向研究�
 | 渲染 | Babylon.js | 场景、材质、动画、摄像机和输入 |
 | 碰撞 | `@dimforge/rapier3d` | 地图碰撞、capsule 查询、ray cast 和 shape cast |
 | 角色运动 | 自定义 kinematic controller | 加速、制动、空中控制、斜坡、游泳和墨水加成 |
-| 实时传输 | WebRTC DataChannel | 浏览器之间的战斗数据 full mesh 传输 |
-| 控制面 | Colyseus | 房间发现、匹配、WebRTC 信令和初始配置 |
+| 实时传输 | `GameTransport`；demo 为 Colyseus relay，目标为 Trystero/WebRTC | 玩法只依赖 peer 协议，不依赖具体网络 API |
+| 控制面 | Colyseus | demo 房间、roster、队伍、coordinator 与中心转发；P2P 阶段可只保留匹配 |
 | NAT 穿透 | STUN + TURN | 优先直连，失败时中继，并提供强制中继隐私模式 |
 | 涂地 | 独立墨水归属系统 | 墨水事件、GPU 纹理、tile 校验和及局部重同步 |
 
 Rust 不是业务代码的前置要求。Rapier 通过 TypeScript/JavaScript API 和 WebAssembly 使用；只有在未来需要修改物理核心或实现共享的高性能校验模块时，才评估增加 Rust crate。
 
+### 传输抽象与 WebRTC 库
+
+玩法层只依赖项目级 `GameTransport` 端口：连接、peer roster、接收 `PeerPacket`、发送 `PeerPacket` 和关闭。协议包自带 `protocolVersion`、`peerId`、`sequence` 与 `simulationTick`。具体传输是适配器，不允许在移动、武器、墨水或渲染代码中直接调用 Colyseus、WebRTC 或某个第三方库。
+
+当前适配器规划：
+
+- `ColyseusRelayTransport`：demo 使用，中心节点只做 owner 校验、大小限制和转发；
+- `TrysteroTransport`：WebRTC 首选适配器，待网络 spike 后启用；
+- `ServerPeerTransport`：公平模式服务端作为一个 peer 接管 simulation owner。
+
+| 方案 | 调研结论 |
+| --- | --- |
+| [Trystero](https://github.com/dmotz/trystero) | 首选。内建 room/full mesh、序列化、TURN、自托管 WebSocket 信令，并支持浏览器、Node、Bun、Deno。API 足够薄，适合放在 `GameTransport` 后面。 |
+| [PeerJS](https://peerjs.com/) | WebRTC 封装成熟且有不可靠数据选项，但 room/full mesh、host migration 和 server peer 生命周期仍需项目自行管理。 |
+| [js-libp2p WebRTC](https://libp2p.io/docs/webrtc-browser-connectivity/) | 跨浏览器/Node 与 relay 能力最完整，但加密、mux、multiaddr、discovery 体系对 8 人房间制动作游戏过重。 |
+| [simple-peer](https://github.com/feross/simple-peer) | 适合单连接，但房间、mesh 和多逻辑通道仍需较多自建协调代码。 |
+
+Trystero 常规 action 是否满足高频状态通道的延迟和拥塞要求必须通过 spike；在结果出来前不把库类型泄漏到协议或 simulation。事件和控制可使用可靠 action，状态通道需验证积压行为与丢弃旧快照策略。
+
 ### P2P 拓扑
 
 目标对局上限首先按 8 名玩家设计。每名玩家与其他玩家建立一条 `RTCPeerConnection`，形成 full mesh：8 人共 28 条点对点连接，每个 peer 维护 7 条连接。
 
-Colyseus 不再推进权威游戏世界。它保留低流量控制连接，用于：
+目标 P2P 模式下 Colyseus 不推进权威游戏世界。它只需保留低流量控制连接，用于：
 
 - 创建、发现和加入房间；
 - 交换 SDP offer/answer 和 ICE candidate；
 - 分发房间协议版本与初始配置；
 - 记录在线状态，并辅助重新加入会话。
 
-房间选出一个 coordinator host。host 负责会话 epoch、逻辑时钟、全局事件排序、开局/结算和迁移，不负责作为唯一物理真相来源。host 离开后，剩余 peers 根据确定性的候选排序选择新 host。
+房间选出一个 coordinator host。host 负责会话 epoch、逻辑时钟、全局事件排序、开局/结算和迁移，不负责作为唯一物理真相来源。host 离开后，剩余 peers 根据确定性的候选排序选择新 host。demo 中心转发不改变这一所有权，只替换数据路径。
 
 直接 P2P 会向对端暴露可连接的 IP 地址。产品必须明确提示这一点，并提供强制 TURN 的隐私中继模式。TURN 会增加服务带宽成本，但不能省略，否则严格 NAT 或防火墙环境中的玩家无法可靠加入。
 
@@ -100,6 +119,8 @@ Colyseus 不再推进权威游戏世界。它保留低流量控制连接，用�
 - coordinator host 拥有比赛时钟、全局事件序和比赛阶段；
 - 每个 peer 独立应用收到的事件并保存事件日志。
 
+`peerId` 是跨重连稳定的玩家身份，不等于 WebSocket session、RTC connection 或第三方库生成的临时连接 ID。队伍、角色 owner、coordinator 候选顺序和 authority lease 都绑定 `peerId`。连接断开重建时只替换 transport session；同一 match 内不得重新分队。demo 客户端在同一标签页保存 stable peer ID 和本地 owner snapshot，中心节点保留首次 assignment。
+
 这是可玩的 casual 模式，不提供可信排名保证。为了让社区以后增加验证机制，游戏规则不能直接写进传输层。至少保留以下接口：
 
 - `MovementValidator`
@@ -111,6 +132,12 @@ Colyseus 不再推进权威游戏世界。它保留低流量控制连接，用�
 - `StateHasher`
 
 后续实现可以选择 host 裁决、目标方确认、多 peer 仲裁、旁观裁判节点或赛后回放审计，而不需要替换 WebRTC 传输和玩法模拟。
+
+### 公平模式的服务端接管
+
+默认 authority 是 peer。需要排位或锦标赛公平性时，官方服务端以 `server peer` 身份加入，取得新的 authority lease，并从当前 coordinator 获取带 epoch/tick 的完整 simulation snapshot 与事件日志尾部。切换只改变 `authority peerId`，不改变 `PeerPacket`、simulation API 或渲染层。
+
+共享 `@tofu/simulation` 必须保持平台无关：不得依赖 DOM、Babylon.js、Colyseus、Node 专有 API 或系统时钟。浏览器 peer 和 server peer 加载同一规则实现。旧 authority 在确认新 epoch 后停止发布 owner state；接收方丢弃旧 epoch 数据，避免双写。
 
 ### 物理与角色控制
 
@@ -138,6 +165,8 @@ Rapier 不拥有最终的玩家手感。玩家使用 capsule 或相近的简单 
 ### 墨水同步
 
 墨水不是刚体或流体模拟。地表维护可查询的队伍归属与更新时间数据，渲染纹理只是它的可视化结果。
+
+开局所有可涂表面均为中性，不预先给两队划分已涂区域。地面和每个可涂墙面拥有稳定 `surfaceId`；同一种 paint stamp 可落在 `ground` 或具体墙面上。玩家潜水加速查询脚下实时归属，墙面附着和上游查询接触点的实时归属。Babylon.js 动态纹理只消费 stamp，不参与规则判定。
 
 网络发送射击或墨水 stamp 事件，而不是逐像素纹理：
 
@@ -169,7 +198,7 @@ C++ 核心活跃、MIT 且性能优秀，但当前 JavaScript/WASM 绑定、包�
 
 ## 技术 spike 与通过标准
 
-在把当前权威房间迁移为 P2P 前，建立独立 spike，至少验证：
+在启用默认 WebRTC adapter 前，建立独立 spike，至少验证：
 
 1. 两个真实浏览器通过 Colyseus 信令建立直连，并能在强制 TURN 模式下连接。
 2. 8 个 peer 建立完整 mesh，持续运行 10 分钟，DataChannel 不出现持续增长的积压。
@@ -184,15 +213,15 @@ C++ 核心活跃、MIT 且性能优秀，但当前 JavaScript/WASM 绑定、包�
 
 ## 迁移顺序
 
-1. 将共享消息升级为带版本和序列号的二进制协议。
-2. 抽象 `Transport`，保留 Colyseus transport 供现有 smoke test 使用。
+1. ~~将共享消息升级为带版本和序列号的协议。~~ 已完成 JSON 版；二进制编码待性能数据决定。
+2. ~~抽象 `GameTransport`，保留 Colyseus relay transport 供 smoke test 使用。~~ 已完成。
 3. 增加 WebRTC signaling 和三通道 peer transport。
-4. 将移动和射击模拟移入共享 simulation package。
+4. ~~将移动和射击模拟移入共享 simulation package。~~ 基础移动、跳跃、潜水、capsule 和弹道已完成。
 5. 引入 Rapier adapter 和自定义 kinematic player controller。
 6. 加入事件日志、重放和 hash 工具。
 7. 实现 host election/migration 和 TURN 隐私模式。
-8. 通过 spike 后移除 Colyseus 权威战斗循环，仅保留控制面。
+8. ~~移除 Colyseus 权威战斗循环。~~ 已完成；当前只保留 roster/coordinator/relay 控制面。
 
 ## 结论
 
-暂定目标架构为 Babylon.js + Rapier + WebRTC full mesh + Colyseus 控制面 + 独立墨水归属系统。该决策只有在上述 spike 通过后才从“暂定采用”变为“已采用”。
+目标架构为 Babylon.js + 平台无关 simulation + Rapier + `GameTransport` + Trystero/WebRTC full mesh + 可选控制面 + 独立墨水归属系统。默认是 peer-owned；中心 relay 只是 demo 传输，公平服务端是可迁移的 authority peer，而不是另一套游戏实现。

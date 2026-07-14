@@ -35,6 +35,9 @@ importers:
       '@tofu/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@tofu/simulation':
+        specifier: workspace:*
+        version: link:../../packages/simulation
     devDependencies:
       typescript:
         specifier: 6.0.3
@@ -72,6 +75,16 @@ importers:
         version: 6.0.3
 
   packages/protocol:
+    devDependencies:
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+
+  packages/simulation:
+    dependencies:
+      '@tofu/protocol':
+        specifier: workspace:*
+        version: link:../protocol
     devDependencies:
       typescript:
         specifier: 6.0.3

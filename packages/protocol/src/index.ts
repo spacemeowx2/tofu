@@ -1,9 +1,16 @@
 export const ROOM_NAME = "tofu_arena";
-export const SERVER_TICK_RATE = 30;
+export const PROTOCOL_VERSION = 1;
 export const PLAYER_MAX_HP = 100;
 export const BULLET_DAMAGE = 25;
+export const BULLET_SPEED = 13;
+export const BULLET_RADIUS = 0.15;
+export const BULLET_GRAVITY = 7.5;
+export const SHOT_COOLDOWN_MS = 280;
 export const ARENA_HALF_SIZE = 12;
-export const PLAYER_RADIUS = 0.65;
+export const PLAYER_RADIUS = 0.45;
+export const PLAYER_COLLIDER_HEIGHT = 1.3;
+export const PLAYER_DIVE_RADIUS = 0.32;
+export const PLAYER_DIVE_COLLIDER_HEIGHT = 0.5;
 
 export const ARENA_OBSTACLES = [
   { x: -4.5, z: 0, width: 2.2, depth: 5.2, height: 2.2 },
@@ -12,20 +19,94 @@ export const ARENA_OBSTACLES = [
   { x: 0, z: 5.5, width: 4.2, depth: 1.8, height: 1.4 }
 ] as const;
 
-export type MoveInput = {
+export type TeamId = 0 | 1;
+export type ObstacleWallSurfaceId = `obstacle-${number}-${"px" | "nx" | "pz" | "nz"}`;
+export type ArenaWallSurfaceId = `arena-${"east" | "west" | "north" | "south"}`;
+export type WallSurfaceId = ObstacleWallSurfaceId | ArenaWallSurfaceId;
+export type PaintSurfaceId = "ground" | WallSurfaceId;
+
+export type PlayerSnapshot = {
+  id: string;
+  name: string;
+  team: TeamId;
   x: number;
+  y: number;
   z: number;
-  sequence: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  facingX: number;
+  facingZ: number;
+  hp: number;
+  alive: boolean;
+  diving: boolean;
+  wallAttached: boolean;
+  wallSurfaceId: WallSurfaceId | "";
 };
 
-export type ShootInput = {
+export type BulletSnapshot = {
+  id: string;
+  ownerId: string;
+  team: TeamId;
+  x: number;
+  y: number;
+  z: number;
   dx: number;
   dy: number;
   dz: number;
-  sequence: number;
+  age: number;
 };
 
-export type GameEvent = {
-  kind: "hit" | "knockout" | "respawn" | "joined" | "left";
-  message: string;
+type PacketHeader = {
+  protocolVersion: typeof PROTOCOL_VERSION;
+  peerId: string;
+  sequence: number;
+  simulationTick: number;
+};
+
+export type PlayerStatePacket = PacketHeader & {
+  kind: "player_state";
+  player: PlayerSnapshot;
+};
+
+export type ShotPacket = PacketHeader & {
+  kind: "shot";
+  bullet: BulletSnapshot;
+};
+
+export type HitPacket = PacketHeader & {
+  kind: "hit";
+  bulletId: string;
+  targetId: string;
+  damage: number;
+};
+
+export type BulletRemovedPacket = PacketHeader & {
+  kind: "bullet_removed";
+  bulletId: string;
+};
+
+type PaintStampBase = {
+  id: string;
+  team: TeamId;
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+};
+
+export type GroundPaintStamp = PaintStampBase & { surfaceId: "ground" };
+export type WallPaintStamp = PaintStampBase & { surfaceId: WallSurfaceId };
+export type PaintStamp = GroundPaintStamp | WallPaintStamp;
+
+export type PaintPacket = PacketHeader & {
+  kind: "paint";
+  stamp: PaintStamp;
+};
+
+export type PeerPacket = PlayerStatePacket | ShotPacket | HitPacket | BulletRemovedPacket | PaintPacket;
+
+export type RelayedPeerPacket = {
+  from: string;
+  packet: PeerPacket;
 };

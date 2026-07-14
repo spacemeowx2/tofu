@@ -12,6 +12,7 @@
   "devDependencies": {
     "@colyseus/sdk": "0.17.43",
     "@tofu/protocol": "workspace:*",
+    "@tofu/simulation": "workspace:*",
     "concurrently": "10.0.3",
     "tsx": "4.23.1",
     "typescript": "6.0.3"

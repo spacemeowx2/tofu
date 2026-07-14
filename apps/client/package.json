@@ -11,7 +11,8 @@
   "dependencies": {
     "@babylonjs/core": "9.16.1",
     "@colyseus/sdk": "0.17.43",
-    "@tofu/protocol": "workspace:*"
+    "@tofu/protocol": "workspace:*",
+    "@tofu/simulation": "workspace:*"
   },
   "devDependencies": {
     "typescript": "6.0.3",
