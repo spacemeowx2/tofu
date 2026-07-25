@@ -11,10 +11,10 @@ pnpm install
 pnpm dev
 ```
 
-然后打开 [http://localhost:5173](http://localhost:5173)。测试两名玩家时可以打开两个标签页：
+然后打开 [http://localhost:15173](http://localhost:15173)。测试两名玩家时可以打开两个标签页：
 
-- `http://localhost:5173/?name=Alpha`
-- `http://localhost:5173/?name=Bravo`
+- `http://localhost:15173/?name=Alpha`
+- `http://localhost:15173/?name=Bravo`
 
 操作方式：
 
@@ -27,7 +27,7 @@ pnpm dev
 - 按住 `Shift` 潜水；处于己方墨水地面时获得游速加成
 - 接触己方墨水墙面时按住 `Shift` 附着，朝墙移动可向上游
 
-开局地面和墙面都是中性底材，没有预涂墨水。墨水弹受重力影响，碰到可涂地面或墙面后生成队伍颜色的圆形 stamp。
+开局地面和墙面都是中性底材，没有预涂墨水。当前武器是“小绿”斯普拉射击枪：每秒 10 发、单发 36 伤害，弹道带确定性的扇形散布与分段落墨；碰到可涂地面或墙面后生成一个主墨斑和若干卫星墨点组成的不规则墨迹。
 
 ## 验证
 
@@ -39,7 +39,7 @@ pnpm build
 pnpm smoke
 ```
 
-`pnpm smoke` 会创建一个独立房间并断言：中心节点只转发 peer 包、不拥有玩法状态、拒绝伪造 owner、重连保持原 peer/team；共享模拟同时验证跳跃、己方地面潜水加速和圆角 capsule 命中。
+`pnpm smoke` 会创建一个独立房间并断言：中心节点只转发 peer 包、不拥有玩法状态、拒绝伪造 owner、重连保持原 peer/team；共享模拟同时验证跳跃、己方地面潜水加速、圆角 capsule 命中，以及小绿的连射速度、扇形散布、弹道落墨和不规则墨斑。
 
 ## 当前原型边界
 

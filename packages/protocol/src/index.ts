@@ -1,11 +1,11 @@
 export const ROOM_NAME = "tofu_arena";
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const PLAYER_MAX_HP = 100;
-export const BULLET_DAMAGE = 25;
-export const BULLET_SPEED = 13;
-export const BULLET_RADIUS = 0.15;
+export const BULLET_DAMAGE = 36;
+export const BULLET_SPEED = 15.5;
+export const BULLET_RADIUS = 0.2;
 export const BULLET_GRAVITY = 7.5;
-export const SHOT_COOLDOWN_MS = 280;
+export const SHOT_COOLDOWN_MS = 100;
 export const ARENA_HALF_SIZE = 12;
 export const PLAYER_RADIUS = 0.45;
 export const PLAYER_COLLIDER_HEIGHT = 1.3;
@@ -20,6 +20,7 @@ export const ARENA_OBSTACLES = [
 ] as const;
 
 export type TeamId = 0 | 1;
+export type WeaponId = "splattershot";
 export type ObstacleWallSurfaceId = `obstacle-${number}-${"px" | "nx" | "pz" | "nz"}`;
 export type ArenaWallSurfaceId = `arena-${"east" | "west" | "north" | "south"}`;
 export type WallSurfaceId = ObstacleWallSurfaceId | ArenaWallSurfaceId;
@@ -55,6 +56,10 @@ export type BulletSnapshot = {
   dy: number;
   dz: number;
   age: number;
+  distanceTraveled: number;
+  paintTrailIndex: number;
+  seed: number;
+  weaponId: WeaponId;
 };
 
 type PacketHeader = {
@@ -92,7 +97,9 @@ type PaintStampBase = {
   x: number;
   y: number;
   z: number;
-  radius: number;
+  radiusU: number;
+  radiusV: number;
+  rotation: number;
 };
 
 export type GroundPaintStamp = PaintStampBase & { surfaceId: "ground" };
@@ -101,7 +108,7 @@ export type PaintStamp = GroundPaintStamp | WallPaintStamp;
 
 export type PaintPacket = PacketHeader & {
   kind: "paint";
-  stamp: PaintStamp;
+  stamps: PaintStamp[];
 };
 
 export type PeerPacket = PlayerStatePacket | ShotPacket | HitPacket | BulletRemovedPacket | PaintPacket;

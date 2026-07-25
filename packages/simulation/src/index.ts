@@ -29,6 +29,22 @@ export type PlayerInput = {
 export type BulletStepResult = {
   alive: boolean;
   paintImpact?: { surfaceId: PaintSurfaceId; x: number; y: number; z: number };
+  trailPaintImpacts: Array<{ surfaceId: "ground"; x: number; y: 0; z: number }>;
+};
+
+export type PaintSplatKind = "trail" | "impact" | "foot";
+export type PaintSplatInput = {
+  id: string;
+  team: TeamId;
+  surfaceId: PaintSurfaceId;
+  x: number;
+  y: number;
+  z: number;
+  directionX: number;
+  directionY: number;
+  directionZ: number;
+  seed: number;
+  kind: PaintSplatKind;
 };
 
 export type WallSurface = {
@@ -86,6 +102,28 @@ const GRAVITY = 20;
 const BULLET_LIFETIME = 2.2;
 const WALL_CLIMB_SPEED = 4.2;
 export const ARENA_WALL_HEIGHT = 0.45;
+
+export const SPLATTERSHOT_PROFILE = {
+  id: "splattershot",
+  displayName: "小绿 / 斯普拉射击枪",
+  fireIntervalSeconds: 0.1,
+  damage: 36,
+  groundSpreadDegrees: 4.86,
+  airSpreadDegrees: 11.66,
+  paintRange: 7.4,
+  falloffSpeedMultiplier: 0.32,
+  footPaintEveryShots: 4,
+  dropletPatternCount: 6
+} as const;
+
+const SPLATTERSHOT_TRAIL_PATTERNS = [
+  [0.7, 3.1],
+  [1.45],
+  [0.85, 4.15],
+  [2.25, 5.15],
+  [1.1],
+  [1.8, 4.55]
+] as const;
 
 const TEAM_SPAWNS = [
   [{ x: -7.5, z: -6.5 }, { x: -7.5, z: 6.5 }, { x: -4.5, z: 0 }],
@@ -195,6 +233,17 @@ export function spawnBullet(
   forward: { x: number; z: number },
   right: { x: number; z: number }
 ): BulletSnapshot {
+  const seed = hashString(id);
+  const spreadRadians = (player.y > 0.05 ? SPLATTERSHOT_PROFILE.airSpreadDegrees : SPLATTERSHOT_PROFILE.groundSpreadDegrees) * Math.PI / 180;
+  const spreadRadius = Math.sqrt(random01(seed)) * Math.tan(spreadRadians);
+  const spreadAngle = random01(seed ^ 0x9e3779b9) * Math.PI * 2;
+  const spreadSide = Math.cos(spreadAngle) * spreadRadius;
+  const spreadUp = Math.sin(spreadAngle) * spreadRadius;
+  const spreadDirection = normalize3({
+    x: direction.x + right.x * spreadSide,
+    y: direction.y + spreadUp,
+    z: direction.z + right.z * spreadSide
+  });
   return {
     id,
     ownerId: player.id,
@@ -202,10 +251,14 @@ export function spawnBullet(
     x: player.x + forward.x * 0.72 + right.x * 0.34,
     y: player.y + 0.82,
     z: player.z + forward.z * 0.72 + right.z * 0.34,
-    dx: direction.x,
-    dy: direction.y,
-    dz: direction.z,
-    age: 0
+    dx: spreadDirection.x,
+    dy: spreadDirection.y,
+    dz: spreadDirection.z,
+    age: 0,
+    distanceTraveled: 0,
+    paintTrailIndex: 0,
+    seed,
+    weaponId: SPLATTERSHOT_PROFILE.id
   };
 }
 
@@ -214,10 +267,14 @@ export function stepBullet(bullet: BulletSnapshot, dt: number): BulletStepResult
   const previousY = bullet.y;
   const previousZ = bullet.z;
   bullet.age += dt;
-  bullet.x += bullet.dx * BULLET_SPEED * dt;
-  bullet.y += bullet.dy * BULLET_SPEED * dt;
-  bullet.z += bullet.dz * BULLET_SPEED * dt;
-  bullet.dy -= BULLET_GRAVITY / BULLET_SPEED * dt;
+  const flightSpeed = bullet.distanceTraveled < SPLATTERSHOT_PROFILE.paintRange
+    ? BULLET_SPEED
+    : BULLET_SPEED * SPLATTERSHOT_PROFILE.falloffSpeedMultiplier;
+  bullet.x += bullet.dx * flightSpeed * dt;
+  bullet.y += bullet.dy * flightSpeed * dt;
+  bullet.z += bullet.dz * flightSpeed * dt;
+  bullet.dy -= BULLET_GRAVITY / flightSpeed * dt;
+  const segmentDistance = Math.hypot(bullet.x - previousX, bullet.y - previousY, bullet.z - previousZ);
   const groundAmount = previousY > BULLET_RADIUS && bullet.y <= BULLET_RADIUS
     ? (previousY - BULLET_RADIUS) / (previousY - bullet.y)
     : undefined;
@@ -225,17 +282,37 @@ export function stepBullet(bullet: BulletSnapshot, dt: number): BulletStepResult
     { x: previousX, y: previousY, z: previousZ },
     { x: bullet.x, y: bullet.y, z: bullet.z }
   );
-  if (groundAmount !== undefined && (!wallImpact || groundAmount <= wallImpact.amount)) {
+  const groundWins = groundAmount !== undefined && (!wallImpact || groundAmount <= wallImpact.amount);
+  const collisionAmount = groundWins ? groundAmount : wallImpact?.amount;
+  const previousDistance = bullet.distanceTraveled;
+  const travelAmount = collisionAmount ?? 1;
+  const traveledThisStep = segmentDistance * travelAmount;
+  const nextDistance = previousDistance + traveledThisStep;
+  const trailPaintImpacts: BulletStepResult["trailPaintImpacts"] = [];
+  const trailPattern = SPLATTERSHOT_TRAIL_PATTERNS[bullet.seed % SPLATTERSHOT_TRAIL_PATTERNS.length];
+  while (bullet.paintTrailIndex < trailPattern.length) {
+    const trailDistance = trailPattern[bullet.paintTrailIndex];
+    if (trailDistance > nextDistance) break;
+    const amount = segmentDistance > 0 ? Math.max(0, Math.min(travelAmount, (trailDistance - previousDistance) / segmentDistance)) : 0;
+    const x = previousX + (bullet.x - previousX) * amount;
+    const z = previousZ + (bullet.z - previousZ) * amount;
+    if (Math.abs(x) <= ARENA_HALF_SIZE && Math.abs(z) <= ARENA_HALF_SIZE) {
+      trailPaintImpacts.push({ surfaceId: "ground", x, y: 0, z });
+    }
+    bullet.paintTrailIndex += 1;
+  }
+  bullet.distanceTraveled = nextDistance;
+  if (groundWins) {
     bullet.x = previousX + (bullet.x - previousX) * groundAmount;
     bullet.y = BULLET_RADIUS;
     bullet.z = previousZ + (bullet.z - previousZ) * groundAmount;
-    return { alive: false, paintImpact: { surfaceId: "ground", x: bullet.x, y: 0, z: bullet.z } };
+    return { alive: false, trailPaintImpacts, paintImpact: { surfaceId: "ground", x: bullet.x, y: 0, z: bullet.z } };
   }
   if (wallImpact) {
     bullet.x = previousX + (bullet.x - previousX) * wallImpact.amount;
     bullet.y = previousY + (bullet.y - previousY) * wallImpact.amount;
     bullet.z = previousZ + (bullet.z - previousZ) * wallImpact.amount;
-    return { alive: false, paintImpact: wallImpact.impact };
+    return { alive: false, trailPaintImpacts, paintImpact: wallImpact.impact };
   }
   const alive = !(
     bullet.age >= BULLET_LIFETIME ||
@@ -243,7 +320,59 @@ export function stepBullet(bullet: BulletSnapshot, dt: number): BulletStepResult
     Math.abs(bullet.x) > ARENA_HALF_SIZE + BULLET_RADIUS ||
     Math.abs(bullet.z) > ARENA_HALF_SIZE + BULLET_RADIUS
   );
-  return { alive };
+  return { alive, trailPaintImpacts };
+}
+
+export function createSplattershotPaintStamps(input: PaintSplatInput): PaintStamp[] {
+  const surface = input.surfaceId === "ground" ? undefined : WALL_SURFACES.find((candidate) => candidate.id === input.surfaceId);
+  if (input.surfaceId !== "ground" && !surface) return [];
+  const directionU = input.surfaceId === "ground"
+    ? input.directionX
+    : surface!.axis === "x" ? input.directionZ : input.directionX;
+  const directionV = input.surfaceId === "ground" ? input.directionZ : input.directionY;
+  const baseRotation = Math.atan2(directionV, directionU);
+  const mainRadiusU = input.kind === "impact" ? 0.68 : input.kind === "foot" ? 0.46 : 0.3;
+  const mainRadiusV = input.kind === "impact" ? 0.46 : input.kind === "foot" ? 0.38 : 0.24;
+  const satelliteCount = input.kind === "impact" ? 5 : 2;
+  const marks: PaintStamp[] = [];
+
+  for (let index = 0; index <= satelliteCount; index += 1) {
+    const markSeed = input.seed ^ Math.imul(index + 1, 0x45d9f3b);
+    const isMain = index === 0;
+    const side = randomSigned(markSeed);
+    const forward = isMain ? 0 : 0.32 + random01(markSeed ^ 0x27d4eb2d) * (input.kind === "impact" ? 0.72 : 0.34);
+    const lateral = isMain ? 0 : side * (0.16 + random01(markSeed ^ 0x165667b1) * 0.42);
+    const cos = Math.cos(baseRotation);
+    const sin = Math.sin(baseRotation);
+    const offsetU = forward * cos - lateral * sin;
+    const offsetV = forward * sin + lateral * cos;
+    const radiusScale = isMain ? 1 : 0.2 + random01(markSeed ^ 0x85ebca6b) * 0.32;
+    let x = input.x;
+    let y = input.y;
+    let z = input.z;
+    if (input.surfaceId === "ground") {
+      x += offsetU;
+      z += offsetV;
+    } else if (surface!.axis === "x") {
+      z += offsetU;
+      y += offsetV;
+    } else {
+      x += offsetU;
+      y += offsetV;
+    }
+    marks.push({
+      id: `${input.id}:${index}`,
+      team: input.team,
+      surfaceId: input.surfaceId,
+      x,
+      y,
+      z,
+      radiusU: mainRadiusU * radiusScale,
+      radiusV: mainRadiusV * radiusScale * (isMain ? 1 : 0.88 + random01(markSeed ^ 0xc2b2ae35) * 0.34),
+      rotation: baseRotation + randomSigned(markSeed ^ 0x9e3779b9) * (isMain ? 0.16 : 0.7)
+    } as PaintStamp);
+  }
+  return marks;
 }
 
 export class InkField {
@@ -269,13 +398,13 @@ export class InkField {
       this.wallStamps.set(stamp.surfaceId, stamps);
       return;
     }
-    const min = this.worldToCell(stamp.x - stamp.radius, stamp.z - stamp.radius, true)!;
-    const max = this.worldToCell(stamp.x + stamp.radius, stamp.z + stamp.radius, true)!;
-    const radiusSquared = stamp.radius * stamp.radius;
+    const maxRadius = Math.max(stamp.radiusU, stamp.radiusV);
+    const min = this.worldToCell(stamp.x - maxRadius, stamp.z - maxRadius, true)!;
+    const max = this.worldToCell(stamp.x + maxRadius, stamp.z + maxRadius, true)!;
     for (let z = min.z; z <= max.z; z += 1) {
       for (let x = min.x; x <= max.x; x += 1) {
         const world = this.cellToWorld(x, z);
-        if ((world.x - stamp.x) ** 2 + (world.z - stamp.z) ** 2 <= radiusSquared) {
+        if (ellipseContains(world.x - stamp.x, world.z - stamp.z, stamp.radiusU, stamp.radiusV, stamp.rotation)) {
           this.cells[z * this.size + x] = stamp.team;
         }
       }
@@ -285,9 +414,13 @@ export class InkField {
   teamAtWall(surfaceId: string, x: number, y: number, z: number): TeamId | null {
     const stamps = this.wallStamps.get(surfaceId);
     if (!stamps) return null;
+    const surface = WALL_SURFACES.find((candidate) => candidate.id === surfaceId);
+    if (!surface) return null;
+    const pointU = surface.axis === "x" ? z : x;
     for (let index = stamps.length - 1; index >= 0; index -= 1) {
       const stamp = stamps[index];
-      if ((x - stamp.x) ** 2 + (y - stamp.y) ** 2 + (z - stamp.z) ** 2 <= stamp.radius ** 2) return stamp.team;
+      const stampU = surface.axis === "x" ? stamp.z : stamp.x;
+      if (ellipseContains(pointU - stampU, y - stamp.y, stamp.radiusU, stamp.radiusV, stamp.rotation)) return stamp.team;
     }
     return null;
   }
@@ -384,6 +517,41 @@ function hitsObstacle(x: number, z: number, y: number, radius: number) {
 
 function clampArena(value: number, radius: number) {
   return Math.max(-ARENA_HALF_SIZE + radius, Math.min(ARENA_HALF_SIZE - radius, value));
+}
+
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function random01(seed: number) {
+  let value = seed >>> 0;
+  value ^= value << 13;
+  value ^= value >>> 17;
+  value ^= value << 5;
+  return (value >>> 0) / 0x1_0000_0000;
+}
+
+function randomSigned(seed: number) {
+  return random01(seed) * 2 - 1;
+}
+
+function normalize3(value: { x: number; y: number; z: number }) {
+  const length = Math.hypot(value.x, value.y, value.z) || 1;
+  return { x: value.x / length, y: value.y / length, z: value.z / length };
+}
+
+function ellipseContains(deltaU: number, deltaV: number, radiusU: number, radiusV: number, rotation: number) {
+  if (radiusU <= 0 || radiusV <= 0) return false;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const localU = deltaU * cos + deltaV * sin;
+  const localV = -deltaU * sin + deltaV * cos;
+  return (localU / radiusU) ** 2 + (localV / radiusV) ** 2 <= 1;
 }
 
 function approach(current: number, target: number, maxDelta: number) {

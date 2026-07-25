@@ -1,5 +1,6 @@
 import "./style.css";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
+import { Ray } from "@babylonjs/core/Culling/ray";
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -17,7 +18,6 @@ import {
   BULLET_SPEED,
   PLAYER_MAX_HP,
   PROTOCOL_VERSION,
-  SHOT_COOLDOWN_MS,
   type BulletSnapshot,
   type PeerPacket,
   type PaintStamp,
@@ -27,11 +27,13 @@ import {
 import {
   bulletHitsPlayer,
   ARENA_WALL_HEIGHT,
+  createSplattershotPaintStamps,
   createPlayer,
   findWallContact,
   groundPointToCanvasUv,
   InkField,
   respawnPlayer,
+  SPLATTERSHOT_PROFILE,
   spawnBullet,
   stepBullet,
   stepPlayer,
@@ -66,7 +68,6 @@ const NEUTRAL_GROUND_COLOR = "#b9c2ad";
 const NEUTRAL_COVER_COLOR = "#84917f";
 const NEUTRAL_ARENA_WALL_COLOR = "#1f2e24";
 const INK_TEXTURE_SIZE = 512;
-const PAINT_RADIUS = 1.25;
 const SIMULATION_STEP = 1 / 60;
 const STATE_SEND_INTERVAL = 1 / 20;
 const RESPAWN_SECONDS = 2.5;
@@ -84,7 +85,7 @@ const NETWORK_EXTRAPOLATION_SECONDS = 0.05;
 const BULLET_RENDER_SHARPNESS = 30;
 const PEER_ID_STORAGE_KEY = "tofu.peerId";
 const PLAYER_STATE_STORAGE_KEY = "tofu.playerState";
-const PAINT_HISTORY_STORAGE_KEY = "tofu.paintHistory";
+const PAINT_HISTORY_STORAGE_KEY = "tofu.paintHistory.v2";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const status = document.querySelector<HTMLDivElement>("#status")!;
@@ -357,8 +358,8 @@ function handlePeerPacket(packet: PeerPacket) {
     return;
   }
   if (packet.kind === "paint") {
-    if (roster.get(packet.peerId)?.team !== packet.stamp.team) return;
-    applyPaintStamp(packet.stamp);
+    if (packet.stamps.length > 16 || packet.stamps.some((stamp) => roster.get(packet.peerId)?.team !== stamp.team)) return;
+    packet.stamps.forEach(applyPaintStamp);
     return;
   }
   if (packet.kind === "hit" && packet.targetId === localSessionId && localPlayer) {
@@ -410,20 +411,33 @@ function stepLocalSimulation(dt: number) {
 
   for (const bullet of [...bullets.values()]) {
     const result = stepBullet(bullet, dt);
+    if (bullet.ownerId === localSessionId) {
+      result.trailPaintImpacts.forEach((impact, index) => {
+        emitPaintStamps(createSplattershotPaintStamps({
+          id: `paint:${bullet.id}:trail:${bullet.paintTrailIndex - result.trailPaintImpacts.length + index}`,
+          team: bullet.team,
+          ...impact,
+          directionX: bullet.dx,
+          directionY: bullet.dy,
+          directionZ: bullet.dz,
+          seed: bullet.seed ^ Math.imul(bullet.paintTrailIndex + index + 1, 0x45d9f3b),
+          kind: "trail"
+        }));
+      });
+    }
     if (!result.alive) {
       if (bullet.ownerId === localSessionId) {
         if (result.paintImpact) {
-          const stamp: PaintStamp = {
+          emitPaintStamps(createSplattershotPaintStamps({
             id: `paint:${bullet.id}`,
             team: bullet.team,
-            surfaceId: result.paintImpact.surfaceId,
-            x: result.paintImpact.x,
-            y: result.paintImpact.y,
-            z: result.paintImpact.z,
-            radius: PAINT_RADIUS
-          };
-          applyPaintStamp(stamp);
-          sendPacket({ kind: "paint", stamp });
+            ...result.paintImpact,
+            directionX: bullet.dx,
+            directionY: bullet.dy,
+            directionZ: bullet.dz,
+            seed: bullet.seed ^ 0x9e3779b9,
+            kind: "impact"
+          }));
         }
         sendPacket({ kind: "bullet_removed", bulletId: bullet.id });
       }
@@ -462,7 +476,7 @@ function setMouseFiring(active: boolean) {
 function updateContinuousFire(dt: number) {
   if (!mouseFiring) return;
   fireAccumulator += dt;
-  const interval = SHOT_COOLDOWN_MS / 1000;
+  const interval = SPLATTERSHOT_PROFILE.fireIntervalSeconds;
   while (fireAccumulator >= interval) {
     fireAccumulator -= interval;
     shoot();
@@ -474,8 +488,9 @@ function shoot() {
   updateAimFromCamera();
   const forward = cameraForward();
   const right = cameraRight();
+  const shotIndex = ++bulletSequence;
   const bullet = spawnBullet(
-    `${localSessionId}:${++bulletSequence}`,
+    `${localSessionId}:${shotIndex}`,
     localPlayer,
     { x: lastAim.x, y: lastAim.y, z: lastAim.z },
     { x: forward.x, z: forward.z },
@@ -484,6 +499,21 @@ function shoot() {
   bullets.set(bullet.id, bullet);
   syncBulletMesh(bullet);
   sendPacket({ kind: "shot", bullet });
+  if (shotIndex % SPLATTERSHOT_PROFILE.footPaintEveryShots === 0) {
+    emitPaintStamps(createSplattershotPaintStamps({
+      id: `paint:${bullet.id}:foot`,
+      team: bullet.team,
+      surfaceId: "ground",
+      x: localPlayer.x + forward.x * 0.32,
+      y: 0,
+      z: localPlayer.z + forward.z * 0.32,
+      directionX: forward.x,
+      directionY: 0,
+      directionZ: forward.z,
+      seed: bullet.seed ^ 0x85ebca6b,
+      kind: "foot"
+    }));
+  }
 }
 
 function broadcastLocalState() {
@@ -530,7 +560,10 @@ function restorePaintHistory(roomId: string) {
 }
 
 function replayPaintHistory() {
-  paintHistory.forEach((stamp) => sendPacket({ kind: "paint", stamp }));
+  const stamps = [...paintHistory.values()];
+  for (let index = 0; index < stamps.length; index += 12) {
+    sendPacket({ kind: "paint", stamps: stamps.slice(index, index + 12) });
+  }
 }
 
 function sendPacket(payload: OutgoingPeerPacket) {
@@ -564,16 +597,24 @@ function cameraViewDirection() {
 
 function updateAimFromCamera() {
   const viewDirection = cameraViewDirection();
-  const localView = playerMeshes.get(localSessionId);
-  if (!localView) {
+  if (!localPlayer) {
     lastAim = viewDirection;
     return;
   }
-  const muzzlePosition = localView.root.position
+  const muzzlePosition = new Vector3(localPlayer.x, localPlayer.y, localPlayer.z)
     .add(cameraForward().scale(MUZZLE_FORWARD_OFFSET))
     .add(cameraRight().scale(MUZZLE_SIDE_OFFSET))
     .add(new Vector3(0, MUZZLE_HEIGHT, 0));
-  const aimPoint = camera.position.add(viewDirection.scale(AIM_DISTANCE));
+  const pick = scene.pickWithRay(
+    new Ray(camera.position, viewDirection, AIM_DISTANCE),
+    (mesh) => mesh.name === "paintable-floor" ||
+      mesh.name.startsWith("wall-") ||
+      mesh.name.startsWith("cover-") ||
+      mesh.name.startsWith("paint-surface-")
+  );
+  const aimPoint = pick?.hit && pick.pickedPoint
+    ? pick.pickedPoint
+    : camera.position.add(viewDirection.scale(AIM_DISTANCE));
   lastAim = aimPoint.subtract(muzzlePosition).normalize();
 }
 
@@ -672,6 +713,12 @@ function createArena() {
   WALL_SURFACES.forEach(createWallPaintSurface);
 }
 
+function emitPaintStamps(stamps: PaintStamp[]) {
+  if (stamps.length === 0) return;
+  stamps.forEach(applyPaintStamp);
+  sendPacket({ kind: "paint", stamps });
+}
+
 function applyPaintStamp(stamp: PaintStamp) {
   if (paintHistory.has(stamp.id)) return;
   paintHistory.set(stamp.id, stamp);
@@ -684,11 +731,17 @@ function applyPaintStamp(stamp: PaintStamp) {
     const uv = groundPointToCanvasUv(stamp);
     const textureX = uv.u * INK_TEXTURE_SIZE;
     const textureY = uv.v * INK_TEXTURE_SIZE;
-    const textureRadius = stamp.radius / (ARENA_HALF_SIZE * 2) * INK_TEXTURE_SIZE;
+    const textureRadiusU = stamp.radiusU / (ARENA_HALF_SIZE * 2) * INK_TEXTURE_SIZE;
+    const textureRadiusV = stamp.radiusV / (ARENA_HALF_SIZE * 2) * INK_TEXTURE_SIZE;
     context.fillStyle = TEAM_COLOR_CSS[stamp.team];
+    context.save();
+    context.translate(textureX, textureY);
+    context.rotate(-stamp.rotation);
+    context.scale(1, textureRadiusV / textureRadiusU);
     context.beginPath();
-    context.arc(textureX, textureY, textureRadius, 0, Math.PI * 2);
+    context.arc(0, 0, textureRadiusU, 0, Math.PI * 2);
     context.fill();
+    context.restore();
     commitInkTexture(inkTexture);
     return;
   }
@@ -699,11 +752,16 @@ function applyPaintStamp(stamp: PaintStamp) {
   const uv = wallPointToCanvasUv(surface, stamp);
   const textureX = uv.u * INK_TEXTURE_SIZE;
   const textureY = uv.v * INK_TEXTURE_SIZE;
-  const radiusX = stamp.radius / (surface.maxAlong - surface.minAlong) * INK_TEXTURE_SIZE;
-  const radiusY = stamp.radius / surface.height * INK_TEXTURE_SIZE;
+  const radiusX = stamp.radiusU / (surface.maxAlong - surface.minAlong) * INK_TEXTURE_SIZE;
+  const radiusY = stamp.radiusV / surface.height * INK_TEXTURE_SIZE;
+  const invertAlong = surface.axis === "x" ? surface.normalX < 0 : surface.normalZ > 0;
+  const canvasDirectionU = Math.cos(stamp.rotation) * (invertAlong ? -1 : 1);
+  const canvasDirectionV = -Math.sin(stamp.rotation);
+  const canvasRotation = Math.atan2(canvasDirectionV, canvasDirectionU);
   context.fillStyle = TEAM_COLOR_CSS[stamp.team];
   context.save();
   context.translate(textureX, textureY);
+  context.rotate(canvasRotation);
   context.scale(1, radiusY / radiusX);
   context.beginPath();
   context.arc(0, 0, radiusX, 0, Math.PI * 2);
@@ -764,11 +822,27 @@ function createTofu(id: string, team: TeamId): PlayerMesh {
   band.parent = root;
   band.position.y = 0.99;
   band.material = makeMaterial(`band-material-${id}`, TEAM_COLORS[team === 0 ? 1 : 0].scale(0.7));
-  const nozzle = MeshBuilder.CreateCylinder(`nozzle-${id}`, { height: 0.62, diameter: 0.14, tessellation: 10 }, scene);
+  const weaponGreen = makeMaterial(`splattershot-green-${id}`, new Color3(0.48, 0.82, 0.12));
+  const weaponDark = makeMaterial(`splattershot-dark-${id}`, new Color3(0.09, 0.2, 0.07));
+  const weaponBody = MeshBuilder.CreateBox(`splattershot-body-${id}`, { width: 0.22, height: 0.24, depth: 0.48 }, scene);
+  weaponBody.parent = root;
+  weaponBody.position.set(0.34, 0.77, 0.43);
+  weaponBody.material = weaponGreen;
+  const weaponTank = MeshBuilder.CreateSphere(`splattershot-tank-${id}`, { diameter: 0.2, segments: 8 }, scene);
+  weaponTank.parent = root;
+  weaponTank.scaling.z = 1.35;
+  weaponTank.position.set(0.34, 0.91, 0.28);
+  weaponTank.material = band.material;
+  const weaponGrip = MeshBuilder.CreateBox(`splattershot-grip-${id}`, { width: 0.13, height: 0.25, depth: 0.13 }, scene);
+  weaponGrip.parent = root;
+  weaponGrip.position.set(0.34, 0.61, 0.35);
+  weaponGrip.rotation.x = -0.25;
+  weaponGrip.material = weaponDark;
+  const nozzle = MeshBuilder.CreateCylinder(`splattershot-nozzle-${id}`, { height: 0.36, diameter: 0.14, tessellation: 10 }, scene);
   nozzle.parent = root;
-  nozzle.position.set(0.34, 0.8, 0.42);
+  nozzle.position.set(0.34, 0.79, 0.68);
   nozzle.rotation.x = Math.PI / 2;
-  nozzle.material = band.material;
+  nozzle.material = weaponDark;
   return {
     root,
     material,
