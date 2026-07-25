@@ -7,7 +7,8 @@
     "dev": "concurrently -n server,client -c magenta,cyan \"pnpm --filter @tofu/server dev\" \"pnpm --filter @tofu/client dev\"",
     "build": "pnpm -r build",
     "check": "pnpm -r check",
-    "smoke": "tsx scripts/smoke-multiplayer.ts"
+    "test:architecture": "node --import tsx scripts/smoke-architecture.ts",
+    "smoke": "node --import tsx scripts/smoke-multiplayer.ts"
   },
   "devDependencies": {
     "@colyseus/sdk": "0.17.43",

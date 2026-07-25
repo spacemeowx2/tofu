@@ -4,13 +4,20 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./ink": "./src/ink.ts",
+    "./level": "./src/level.ts",
+    "./physics": "./src/physics.ts",
+    "./rapier-physics": "./src/rapier-physics.ts",
+    "./weapons": "./src/weapons.ts",
+    "./world": "./src/world.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
     "check": "tsc --noEmit"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "0.19.3",
     "@tofu/protocol": "workspace:*"
   },
   "devDependencies": {

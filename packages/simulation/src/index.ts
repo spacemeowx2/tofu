@@ -1,9 +1,5 @@
 import {
   ARENA_HALF_SIZE,
-  ARENA_OBSTACLES,
-  BULLET_GRAVITY,
-  BULLET_RADIUS,
-  BULLET_SPEED,
   PLAYER_COLLIDER_HEIGHT,
   PLAYER_DIVE_COLLIDER_HEIGHT,
   PLAYER_DIVE_RADIUS,
@@ -16,6 +12,24 @@ import {
   type TeamId,
   type WallSurfaceId
 } from "@tofu/protocol";
+import {
+  createLevelWallSurfaces,
+  getTeamSpawn,
+  TOFU_TEST_LEVEL,
+  type LevelDefinition,
+  type WallSurface
+} from "./level.js";
+import {
+  AnalyticPhysicsAdapter,
+  playerCollider,
+  type PhysicsAdapter,
+  type WallContact
+} from "./physics.js";
+import {
+  SPLATTERSHOT,
+  getWeaponDefinition,
+  type WeaponDefinition
+} from "./weapons.js";
 
 export type PlayerInput = {
   moveX: number;
@@ -47,23 +61,6 @@ export type PaintSplatInput = {
   kind: PaintSplatKind;
 };
 
-export type WallSurface = {
-  id: WallSurfaceId;
-  axis: "x" | "z";
-  coordinate: number;
-  minAlong: number;
-  maxAlong: number;
-  height: number;
-  normalX: number;
-  normalZ: number;
-};
-
-export type WallContact = WallSurface & {
-  x: number;
-  y: number;
-  z: number;
-};
-
 declare const canvasUnitBrand: unique symbol;
 export type CanvasUnit = number & { readonly [canvasUnitBrand]: "CanvasUnit" };
 export type CanvasUv = { u: CanvasUnit; v: CanvasUnit };
@@ -72,10 +69,13 @@ function canvasUnit(value: number): CanvasUnit {
   return Math.max(0, Math.min(1, value)) as CanvasUnit;
 }
 
-export function groundPointToCanvasUv(point: { x: number; z: number }): CanvasUv {
+export function groundPointToCanvasUv(
+  point: { x: number; z: number },
+  halfSize = TOFU_TEST_LEVEL.halfSize
+): CanvasUv {
   return {
-    u: canvasUnit((point.x + ARENA_HALF_SIZE) / (ARENA_HALF_SIZE * 2)),
-    v: canvasUnit(1 - (point.z + ARENA_HALF_SIZE) / (ARENA_HALF_SIZE * 2))
+    u: canvasUnit((point.x + halfSize) / (halfSize * 2)),
+    v: canvasUnit(1 - (point.z + halfSize) / (halfSize * 2))
   };
 }
 
@@ -99,52 +99,33 @@ const PLAYER_ACCELERATION = 30;
 const PLAYER_BRAKING = 42;
 const JUMP_VELOCITY = 7.2;
 const GRAVITY = 20;
-const BULLET_LIFETIME = 2.2;
 const WALL_CLIMB_SPEED = 4.2;
-export const ARENA_WALL_HEIGHT = 0.45;
+export const ARENA_WALL_HEIGHT = TOFU_TEST_LEVEL.arenaWallHeight;
 
 export const SPLATTERSHOT_PROFILE = {
-  id: "splattershot",
-  displayName: "小绿 / 斯普拉射击枪",
-  fireIntervalSeconds: 0.1,
-  damage: 36,
-  groundSpreadDegrees: 4.86,
-  airSpreadDegrees: 11.66,
-  paintRange: 7.4,
-  falloffSpeedMultiplier: 0.32,
-  footPaintEveryShots: 4,
-  dropletPatternCount: 6
+  id: SPLATTERSHOT.id,
+  displayName: SPLATTERSHOT.displayName,
+  fireIntervalSeconds: SPLATTERSHOT.fireIntervalSeconds,
+  damage: SPLATTERSHOT.damage,
+  groundSpreadDegrees: SPLATTERSHOT.spread.groundDegrees,
+  airSpreadDegrees: SPLATTERSHOT.spread.airDegrees,
+  paintRange: SPLATTERSHOT.projectile.paintRange,
+  falloffSpeedMultiplier: SPLATTERSHOT.projectile.falloffSpeedMultiplier,
+  footPaintEveryShots: SPLATTERSHOT.paint.footEveryShots,
+  dropletPatternCount: SPLATTERSHOT.paint.trailPatterns.length
 } as const;
 
-const SPLATTERSHOT_TRAIL_PATTERNS = [
-  [0.7, 3.1],
-  [1.45],
-  [0.85, 4.15],
-  [2.25, 5.15],
-  [1.1],
-  [1.8, 4.55]
-] as const;
+export const WALL_SURFACES: readonly WallSurface[] = createLevelWallSurfaces(TOFU_TEST_LEVEL);
+const DEFAULT_PHYSICS = new AnalyticPhysicsAdapter(TOFU_TEST_LEVEL);
 
-const TEAM_SPAWNS = [
-  [{ x: -7.5, z: -6.5 }, { x: -7.5, z: 6.5 }, { x: -4.5, z: 0 }],
-  [{ x: 7.5, z: 6.5 }, { x: 7.5, z: -6.5 }, { x: 4.5, z: 0 }]
-] as const;
-
-export const WALL_SURFACES: readonly WallSurface[] = [
-  ...ARENA_OBSTACLES.flatMap((box, index): WallSurface[] => [
-    { id: `obstacle-${index}-px`, axis: "x", coordinate: box.x + box.width / 2, minAlong: box.z - box.depth / 2, maxAlong: box.z + box.depth / 2, height: box.height, normalX: 1, normalZ: 0 },
-    { id: `obstacle-${index}-nx`, axis: "x", coordinate: box.x - box.width / 2, minAlong: box.z - box.depth / 2, maxAlong: box.z + box.depth / 2, height: box.height, normalX: -1, normalZ: 0 },
-    { id: `obstacle-${index}-pz`, axis: "z", coordinate: box.z + box.depth / 2, minAlong: box.x - box.width / 2, maxAlong: box.x + box.width / 2, height: box.height, normalX: 0, normalZ: 1 },
-    { id: `obstacle-${index}-nz`, axis: "z", coordinate: box.z - box.depth / 2, minAlong: box.x - box.width / 2, maxAlong: box.x + box.width / 2, height: box.height, normalX: 0, normalZ: -1 }
-  ]),
-  { id: "arena-east", axis: "x", coordinate: ARENA_HALF_SIZE, minAlong: -ARENA_HALF_SIZE, maxAlong: ARENA_HALF_SIZE, height: ARENA_WALL_HEIGHT, normalX: -1, normalZ: 0 },
-  { id: "arena-west", axis: "x", coordinate: -ARENA_HALF_SIZE, minAlong: -ARENA_HALF_SIZE, maxAlong: ARENA_HALF_SIZE, height: ARENA_WALL_HEIGHT, normalX: 1, normalZ: 0 },
-  { id: "arena-north", axis: "z", coordinate: ARENA_HALF_SIZE, minAlong: -ARENA_HALF_SIZE, maxAlong: ARENA_HALF_SIZE, height: ARENA_WALL_HEIGHT, normalX: 0, normalZ: -1 },
-  { id: "arena-south", axis: "z", coordinate: -ARENA_HALF_SIZE, minAlong: -ARENA_HALF_SIZE, maxAlong: ARENA_HALF_SIZE, height: ARENA_WALL_HEIGHT, normalX: 0, normalZ: 1 }
-];
-
-export function createPlayer(id: string, name: string, team: TeamId, teamSlot = 0): PlayerSnapshot {
-  const spawn = TEAM_SPAWNS[team][teamSlot % TEAM_SPAWNS[team].length];
+export function createPlayer(
+  id: string,
+  name: string,
+  team: TeamId,
+  teamSlot = 0,
+  level: LevelDefinition = TOFU_TEST_LEVEL
+): PlayerSnapshot {
+  const spawn = getTeamSpawn(level, team, teamSlot);
   return {
     id,
     name,
@@ -165,12 +146,17 @@ export function createPlayer(id: string, name: string, team: TeamId, teamSlot = 
   };
 }
 
-export function respawnPlayer(player: PlayerSnapshot, teamSlot = 0) {
-  const fresh = createPlayer(player.id, player.name, player.team, teamSlot);
+export function respawnPlayer(player: PlayerSnapshot, teamSlot = 0, level: LevelDefinition = TOFU_TEST_LEVEL) {
+  const fresh = createPlayer(player.id, player.name, player.team, teamSlot, level);
   Object.assign(player, fresh);
 }
 
-export function stepPlayer(player: PlayerSnapshot, input: PlayerInput, dt: number) {
+export function stepPlayer(
+  player: PlayerSnapshot,
+  input: PlayerInput,
+  dt: number,
+  physics: PhysicsAdapter = DEFAULT_PHYSICS
+) {
   if (!player.alive) return;
   const wall = input.wallContact;
   if (input.diving && wall?.team === player.team && player.y < wall.height) {
@@ -217,13 +203,15 @@ export function stepPlayer(player: PlayerSnapshot, input: PlayerInput, dt: numbe
     player.vy = 0;
   }
 
-  const radius = player.diving ? PLAYER_DIVE_RADIUS : PLAYER_RADIUS;
-  const nextX = clampArena(player.x + player.vx * dt, radius);
-  if (!hitsObstacle(nextX, player.z, player.y, radius)) player.x = nextX;
-  else player.vx = 0;
-  const nextZ = clampArena(player.z + player.vz * dt, radius);
-  if (!hitsObstacle(player.x, nextZ, player.y, radius)) player.z = nextZ;
-  else player.vz = 0;
+  const movement = physics.resolvePlayerMovement(
+    player,
+    { x: player.vx * dt, z: player.vz * dt },
+    playerCollider(player)
+  );
+  player.x = movement.x;
+  player.z = movement.z;
+  if (movement.blockedX) player.vx = 0;
+  if (movement.blockedZ) player.vz = 0;
 }
 
 export function spawnBullet(
@@ -231,10 +219,11 @@ export function spawnBullet(
   player: PlayerSnapshot,
   direction: { x: number; y: number; z: number },
   forward: { x: number; z: number },
-  right: { x: number; z: number }
+  right: { x: number; z: number },
+  weapon: WeaponDefinition = SPLATTERSHOT
 ): BulletSnapshot {
   const seed = hashString(id);
-  const spreadRadians = (player.y > 0.05 ? SPLATTERSHOT_PROFILE.airSpreadDegrees : SPLATTERSHOT_PROFILE.groundSpreadDegrees) * Math.PI / 180;
+  const spreadRadians = (player.y > 0.05 ? weapon.spread.airDegrees : weapon.spread.groundDegrees) * Math.PI / 180;
   const spreadRadius = Math.sqrt(random01(seed)) * Math.tan(spreadRadians);
   const spreadAngle = random01(seed ^ 0x9e3779b9) * Math.PI * 2;
   const spreadSide = Math.cos(spreadAngle) * spreadRadius;
@@ -248,9 +237,9 @@ export function spawnBullet(
     id,
     ownerId: player.id,
     team: player.team,
-    x: player.x + forward.x * 0.72 + right.x * 0.34,
-    y: player.y + 0.82,
-    z: player.z + forward.z * 0.72 + right.z * 0.34,
+    x: player.x + forward.x * weapon.muzzle.forward + right.x * weapon.muzzle.side,
+    y: player.y + weapon.muzzle.height,
+    z: player.z + forward.z * weapon.muzzle.forward + right.z * weapon.muzzle.side,
     dx: spreadDirection.x,
     dy: spreadDirection.y,
     dz: spreadDirection.z,
@@ -258,29 +247,36 @@ export function spawnBullet(
     distanceTraveled: 0,
     paintTrailIndex: 0,
     seed,
-    weaponId: SPLATTERSHOT_PROFILE.id
+    weaponId: weapon.id
   };
 }
 
-export function stepBullet(bullet: BulletSnapshot, dt: number): BulletStepResult {
+export function stepBullet(
+  bullet: BulletSnapshot,
+  dt: number,
+  physics: PhysicsAdapter = DEFAULT_PHYSICS,
+  level: LevelDefinition = TOFU_TEST_LEVEL
+): BulletStepResult {
+  const weapon = getWeaponDefinition(bullet.weaponId);
   const previousX = bullet.x;
   const previousY = bullet.y;
   const previousZ = bullet.z;
   bullet.age += dt;
-  const flightSpeed = bullet.distanceTraveled < SPLATTERSHOT_PROFILE.paintRange
-    ? BULLET_SPEED
-    : BULLET_SPEED * SPLATTERSHOT_PROFILE.falloffSpeedMultiplier;
+  const flightSpeed = bullet.distanceTraveled < weapon.projectile.paintRange
+    ? weapon.projectile.speed
+    : weapon.projectile.speed * weapon.projectile.falloffSpeedMultiplier;
   bullet.x += bullet.dx * flightSpeed * dt;
   bullet.y += bullet.dy * flightSpeed * dt;
   bullet.z += bullet.dz * flightSpeed * dt;
-  bullet.dy -= BULLET_GRAVITY / flightSpeed * dt;
+  bullet.dy -= weapon.projectile.gravity / flightSpeed * dt;
   const segmentDistance = Math.hypot(bullet.x - previousX, bullet.y - previousY, bullet.z - previousZ);
-  const groundAmount = previousY > BULLET_RADIUS && bullet.y <= BULLET_RADIUS
-    ? (previousY - BULLET_RADIUS) / (previousY - bullet.y)
+  const groundAmount = previousY > weapon.projectile.radius && bullet.y <= weapon.projectile.radius
+    ? (previousY - weapon.projectile.radius) / (previousY - bullet.y)
     : undefined;
-  const wallImpact = findBulletWallImpact(
+  const wallImpact = physics.castProjectile(
     { x: previousX, y: previousY, z: previousZ },
-    { x: bullet.x, y: bullet.y, z: bullet.z }
+    { x: bullet.x, y: bullet.y, z: bullet.z },
+    weapon.projectile.radius
   );
   const groundWins = groundAmount !== undefined && (!wallImpact || groundAmount <= wallImpact.amount);
   const collisionAmount = groundWins ? groundAmount : wallImpact?.amount;
@@ -289,14 +285,14 @@ export function stepBullet(bullet: BulletSnapshot, dt: number): BulletStepResult
   const traveledThisStep = segmentDistance * travelAmount;
   const nextDistance = previousDistance + traveledThisStep;
   const trailPaintImpacts: BulletStepResult["trailPaintImpacts"] = [];
-  const trailPattern = SPLATTERSHOT_TRAIL_PATTERNS[bullet.seed % SPLATTERSHOT_TRAIL_PATTERNS.length];
+  const trailPattern = weapon.paint.trailPatterns[bullet.seed % weapon.paint.trailPatterns.length];
   while (bullet.paintTrailIndex < trailPattern.length) {
     const trailDistance = trailPattern[bullet.paintTrailIndex];
     if (trailDistance > nextDistance) break;
     const amount = segmentDistance > 0 ? Math.max(0, Math.min(travelAmount, (trailDistance - previousDistance) / segmentDistance)) : 0;
     const x = previousX + (bullet.x - previousX) * amount;
     const z = previousZ + (bullet.z - previousZ) * amount;
-    if (Math.abs(x) <= ARENA_HALF_SIZE && Math.abs(z) <= ARENA_HALF_SIZE) {
+    if (Math.abs(x) <= level.halfSize && Math.abs(z) <= level.halfSize) {
       trailPaintImpacts.push({ surfaceId: "ground", x, y: 0, z });
     }
     bullet.paintTrailIndex += 1;
@@ -304,7 +300,7 @@ export function stepBullet(bullet: BulletSnapshot, dt: number): BulletStepResult
   bullet.distanceTraveled = nextDistance;
   if (groundWins) {
     bullet.x = previousX + (bullet.x - previousX) * groundAmount;
-    bullet.y = BULLET_RADIUS;
+    bullet.y = weapon.projectile.radius;
     bullet.z = previousZ + (bullet.z - previousZ) * groundAmount;
     return { alive: false, trailPaintImpacts, paintImpact: { surfaceId: "ground", x: bullet.x, y: 0, z: bullet.z } };
   }
@@ -315,24 +311,31 @@ export function stepBullet(bullet: BulletSnapshot, dt: number): BulletStepResult
     return { alive: false, trailPaintImpacts, paintImpact: wallImpact.impact };
   }
   const alive = !(
-    bullet.age >= BULLET_LIFETIME ||
+    bullet.age >= weapon.projectile.lifetime ||
     bullet.y > 8 ||
-    Math.abs(bullet.x) > ARENA_HALF_SIZE + BULLET_RADIUS ||
-    Math.abs(bullet.z) > ARENA_HALF_SIZE + BULLET_RADIUS
+    Math.abs(bullet.x) > level.halfSize + weapon.projectile.radius ||
+    Math.abs(bullet.z) > level.halfSize + weapon.projectile.radius
   );
   return { alive, trailPaintImpacts };
 }
 
-export function createSplattershotPaintStamps(input: PaintSplatInput): PaintStamp[] {
-  const surface = input.surfaceId === "ground" ? undefined : WALL_SURFACES.find((candidate) => candidate.id === input.surfaceId);
+export function createWeaponPaintStamps(
+  input: PaintSplatInput,
+  weapon: WeaponDefinition = SPLATTERSHOT,
+  wallSurfaces: readonly WallSurface[] = WALL_SURFACES
+): PaintStamp[] {
+  const surface = input.surfaceId === "ground" ? undefined : wallSurfaces.find((candidate) => candidate.id === input.surfaceId);
   if (input.surfaceId !== "ground" && !surface) return [];
   const directionU = input.surfaceId === "ground"
     ? input.directionX
     : surface!.axis === "x" ? input.directionZ : input.directionX;
   const directionV = input.surfaceId === "ground" ? input.directionZ : input.directionY;
   const baseRotation = Math.atan2(directionV, directionU);
-  const mainRadiusU = input.kind === "impact" ? 0.68 : input.kind === "foot" ? 0.46 : 0.3;
-  const mainRadiusV = input.kind === "impact" ? 0.46 : input.kind === "foot" ? 0.38 : 0.24;
+  const [mainRadiusU, mainRadiusV] = input.kind === "impact"
+    ? weapon.paint.impactMainRadius
+    : input.kind === "foot"
+      ? weapon.paint.footMainRadius
+      : weapon.paint.trailMainRadius;
   const satelliteCount = input.kind === "impact" ? 5 : 2;
   const marks: PaintStamp[] = [];
 
@@ -373,6 +376,10 @@ export function createSplattershotPaintStamps(input: PaintSplatInput): PaintStam
     } as PaintStamp);
   }
   return marks;
+}
+
+export function createSplattershotPaintStamps(input: PaintSplatInput): PaintStamp[] {
+  return createWeaponPaintStamps(input, SPLATTERSHOT, WALL_SURFACES);
 }
 
 export class InkField {
@@ -443,58 +450,11 @@ export class InkField {
   }
 }
 
-export function findWallContact(player: PlayerSnapshot): WallContact | undefined {
-  const radius = player.diving ? PLAYER_DIVE_RADIUS : PLAYER_RADIUS;
-  let closest: (WallContact & { distance: number }) | undefined;
-  for (const surface of WALL_SURFACES) {
-    if (player.y > surface.height) continue;
-    const along = surface.axis === "x" ? player.z : player.x;
-    if (along < surface.minAlong - radius || along > surface.maxAlong + radius) continue;
-    const signedDistance = surface.axis === "x"
-      ? (player.x - surface.coordinate) * surface.normalX
-      : (player.z - surface.coordinate) * surface.normalZ;
-    if (signedDistance < -0.05 || signedDistance > radius + 0.18 || (closest && signedDistance >= closest.distance)) continue;
-    closest = {
-      ...surface,
-      x: surface.axis === "x" ? surface.coordinate : player.x,
-      y: Math.min(surface.height, player.y + radius),
-      z: surface.axis === "z" ? surface.coordinate : player.z,
-      distance: signedDistance
-    };
-  }
-  return closest;
-}
-
-function findBulletWallImpact(
-  from: { x: number; y: number; z: number },
-  to: { x: number; y: number; z: number }
-) {
-  let closest: { amount: number; impact: { surfaceId: WallSurfaceId; x: number; y: number; z: number } } | undefined;
-  for (const surface of WALL_SURFACES) {
-    const fromAxis = surface.axis === "x" ? from.x : from.z;
-    const toAxis = surface.axis === "x" ? to.x : to.z;
-    const fromDistance = (fromAxis - surface.coordinate) * (surface.axis === "x" ? surface.normalX : surface.normalZ);
-    const toDistance = (toAxis - surface.coordinate) * (surface.axis === "x" ? surface.normalX : surface.normalZ);
-    if (fromDistance < BULLET_RADIUS || toDistance >= BULLET_RADIUS || fromDistance === toDistance) continue;
-    const amount = (fromDistance - BULLET_RADIUS) / (fromDistance - toDistance);
-    if (amount < 0 || amount > 1 || (closest && amount >= closest.amount)) continue;
-    const x = from.x + (to.x - from.x) * amount;
-    const y = from.y + (to.y - from.y) * amount;
-    const z = from.z + (to.z - from.z) * amount;
-    if (y < -BULLET_RADIUS || y > surface.height + BULLET_RADIUS) continue;
-    const along = surface.axis === "x" ? z : x;
-    if (along < surface.minAlong - BULLET_RADIUS || along > surface.maxAlong + BULLET_RADIUS) continue;
-    closest = {
-      amount,
-      impact: {
-        surfaceId: surface.id,
-        x: surface.axis === "x" ? surface.coordinate : x,
-        y: Math.max(0, Math.min(surface.height, y)),
-        z: surface.axis === "z" ? surface.coordinate : z
-      }
-    };
-  }
-  return closest;
+export function findWallContact(
+  player: PlayerSnapshot,
+  physics: PhysicsAdapter = DEFAULT_PHYSICS
+): WallContact | undefined {
+  return physics.findWallContact(player);
 }
 
 export function bulletHitsPlayer(bullet: BulletSnapshot, player: PlayerSnapshot) {
@@ -503,20 +463,8 @@ export function bulletHitsPlayer(bullet: BulletSnapshot, player: PlayerSnapshot)
   const capsuleBottom = player.y + radius;
   const capsuleTop = player.y + height - radius;
   const nearestY = Math.max(capsuleBottom, Math.min(capsuleTop, bullet.y));
-  return Math.hypot(bullet.x - player.x, bullet.y - nearestY, bullet.z - player.z) <= radius + BULLET_RADIUS;
-}
-
-function hitsObstacle(x: number, z: number, y: number, radius: number) {
-  return ARENA_OBSTACLES.some((box) => {
-    if (y >= box.height) return false;
-    const nearestX = Math.max(box.x - box.width / 2, Math.min(box.x + box.width / 2, x));
-    const nearestZ = Math.max(box.z - box.depth / 2, Math.min(box.z + box.depth / 2, z));
-    return Math.hypot(x - nearestX, z - nearestZ) <= radius;
-  });
-}
-
-function clampArena(value: number, radius: number) {
-  return Math.max(-ARENA_HALF_SIZE + radius, Math.min(ARENA_HALF_SIZE - radius, value));
+  return Math.hypot(bullet.x - player.x, bullet.y - nearestY, bullet.z - player.z) <=
+    radius + getWeaponDefinition(bullet.weaponId).projectile.radius;
 }
 
 function hashString(value: string) {

@@ -1,5 +1,5 @@
 export const ROOM_NAME = "tofu_arena";
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const PLAYER_MAX_HP = 100;
 export const BULLET_DAMAGE = 36;
 export const BULLET_SPEED = 15.5;
@@ -20,7 +20,7 @@ export const ARENA_OBSTACLES = [
 ] as const;
 
 export type TeamId = 0 | 1;
-export type WeaponId = "splattershot";
+export type WeaponId = string;
 export type ObstacleWallSurfaceId = `obstacle-${number}-${"px" | "nx" | "pz" | "nz"}`;
 export type ArenaWallSurfaceId = `arena-${"east" | "west" | "north" | "south"}`;
 export type WallSurfaceId = ObstacleWallSurfaceId | ArenaWallSurfaceId;
@@ -82,6 +82,7 @@ export type ShotPacket = PacketHeader & {
 export type HitPacket = PacketHeader & {
   kind: "hit";
   bulletId: string;
+  weaponId: WeaponId;
   targetId: string;
   damage: number;
 };
@@ -111,7 +112,32 @@ export type PaintPacket = PacketHeader & {
   stamps: PaintStamp[];
 };
 
-export type PeerPacket = PlayerStatePacket | ShotPacket | HitPacket | BulletRemovedPacket | PaintPacket;
+export type InkTileSnapshotDto = {
+  surfaceId: PaintSurfaceId;
+  tileX: number;
+  tileY: number;
+  tileSize: number;
+  gridWidth: number;
+  gridHeight: number;
+  width: number;
+  height: number;
+  owners: number[];
+  ticks: number[];
+  hash: number;
+};
+
+export type InkTilePacket = PacketHeader & {
+  kind: "ink_tile";
+  tile: InkTileSnapshotDto;
+};
+
+export type PeerPacket =
+  | PlayerStatePacket
+  | ShotPacket
+  | HitPacket
+  | BulletRemovedPacket
+  | PaintPacket
+  | InkTilePacket;
 
 export type RelayedPeerPacket = {
   from: string;

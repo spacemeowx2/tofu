@@ -14,6 +14,9 @@ importers:
       '@tofu/protocol':
         specifier: workspace:*
         version: link:packages/protocol
+      '@tofu/simulation':
+        specifier: workspace:*
+        version: link:packages/simulation
       concurrently:
         specifier: 10.0.3
         version: 10.0.3
@@ -82,6 +85,9 @@ importers:
 
   packages/simulation:
     dependencies:
+      '@dimforge/rapier3d-compat':
+        specifier: 0.19.3
+        version: 0.19.3
       '@tofu/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -168,6 +174,9 @@ packages:
     peerDependenciesMeta:
       express:
         optional: true
+
+  '@dimforge/rapier3d-compat@0.19.3':
+    resolution: {integrity: sha512-mMVdSj1PRTT108s9Swbu2GQOmHbn8kbJANRV5xfczL3s0T4vkgZAuoMRgvBzQcHanpKusbC0ZJj6z3mC3aj3vg==}
 
   '@emnapi/core@1.11.1':
     resolution: {integrity: sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ==}
@@ -1172,6 +1181,8 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
+
+  '@dimforge/rapier3d-compat@0.19.3': {}
 
   '@emnapi/core@1.11.1':
     dependencies:

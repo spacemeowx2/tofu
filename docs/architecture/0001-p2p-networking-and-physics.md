@@ -1,6 +1,6 @@
 # ADR 0001: P2P 联机与物理引擎架构
 
-- 状态：采用；peer-owned relay demo 已落地，WebRTC adapter 待 spike
+- 状态：采用；peer-owned relay、Rapier adapter 与墨水 tile 已落地，WebRTC adapter 待 spike
 - 日期：2026-07-14
 - 范围：浏览器客户端、联机协议、物理碰撞、涂地同步
 
@@ -36,7 +36,7 @@ Splatoon 没有公开完整联网实现。可获得的 Splatoon 2 逆向研究�
 | 领域 | 选择 | 职责 |
 | --- | --- | --- |
 | 渲染 | Babylon.js | 场景、材质、动画、摄像机和输入 |
-| 碰撞 | `@dimforge/rapier3d` | 地图碰撞、capsule 查询、ray cast 和 shape cast |
+| 碰撞 | `@dimforge/rapier3d-compat` | 官方 Rapier WASM 包；地图碰撞、capsule 查询和 shape cast |
 | 角色运动 | 自定义 kinematic controller | 加速、制动、空中控制、斜坡、游泳和墨水加成 |
 | 实时传输 | `GameTransport`；demo 为 Colyseus relay，目标为 Trystero/WebRTC | 玩法只依赖 peer 协议，不依赖具体网络 API |
 | 控制面 | Colyseus | demo 房间、roster、队伍、coordinator 与中心转发；P2P 阶段可只保留匹配 |
@@ -217,8 +217,8 @@ C++ 核心活跃、MIT 且性能优秀，但当前 JavaScript/WASM 绑定、包�
 2. ~~抽象 `GameTransport`，保留 Colyseus relay transport 供 smoke test 使用。~~ 已完成。
 3. 增加 WebRTC signaling 和三通道 peer transport。
 4. ~~将移动和射击模拟移入共享 simulation package。~~ 基础移动、跳跃、潜水、capsule 和弹道已完成。
-5. 引入 Rapier adapter 和自定义 kinematic player controller。
-6. 加入事件日志、重放和 hash 工具。
+5. ~~引入 Rapier adapter 和自定义 kinematic player controller。~~ capsule/ball shape-cast adapter 已完成；斜坡和台阶 spike 待办。
+6. 加入事件日志、重放和 hash 工具。`GameWorld` snapshot/restore 与墨水 tile hash 已完成，事件日志和跨浏览器重放待办。
 7. 实现 host election/migration 和 TURN 隐私模式。
 8. ~~移除 Colyseus 权威战斗循环。~~ 已完成；当前只保留 roster/coordinator/relay 控制面。
 
