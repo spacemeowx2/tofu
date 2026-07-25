@@ -7,7 +7,7 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Scene } from "@babylonjs/core/scene";
-import type { BulletSnapshot, PaintStamp, PlayerSnapshot, TeamId } from "@tofu/protocol";
+import type { BulletSnapshot, PlayerSnapshot, TeamId } from "@tofu/protocol";
 import type { InkTileSnapshot } from "@tofu/simulation/ink";
 import type { LevelDefinition, WallSurface } from "@tofu/simulation/level";
 import type { ThirdPersonCamera } from "../camera/ThirdPersonCamera";
@@ -60,7 +60,6 @@ export class GameRenderer {
       this.wallInkTextures,
       INK_TEXTURE_SIZE,
       TEAM_COLOR_CSS,
-      level.halfSize,
       wallSurfaces,
       {
         ground: NEUTRAL_GROUND_COLOR,
@@ -70,7 +69,7 @@ export class GameRenderer {
     );
   }
 
-  syncPlayer(player: PlayerSnapshot, local: boolean) {
+  syncPlayer(player: Readonly<PlayerSnapshot>, local: boolean) {
     let view = this.playerMeshes.get(player.id);
     if (!view) {
       view = this.createTofu(player.id, player.team);
@@ -91,7 +90,7 @@ export class GameRenderer {
     view.material.alpha = player.alive ? local ? 1 : 0.92 : 0.48;
   }
 
-  syncBullet(bullet: BulletSnapshot) {
+  syncBullet(bullet: Readonly<BulletSnapshot>) {
     let view = this.bulletMeshes.get(bullet.id);
     if (!view) {
       view = this.createBullet(bullet.id, bullet.team);
@@ -124,10 +123,6 @@ export class GameRenderer {
     if (localView) camera.follow(localView.root, localView.diving);
   }
 
-  applyPaintStamp(stamp: PaintStamp) {
-    this.inkRenderer.applyStamp(stamp);
-  }
-
   applyInkTile(snapshot: InkTileSnapshot) {
     this.inkRenderer.applyTile(snapshot);
   }
@@ -142,7 +137,7 @@ export class GameRenderer {
     this.bulletMeshes.delete(id);
   }
 
-  pruneBullets(existing: ReadonlyMap<string, BulletSnapshot>) {
+  pruneBullets(existing: ReadonlyMap<string, Readonly<BulletSnapshot>>) {
     for (const id of this.bulletMeshes.keys()) {
       if (!existing.has(id)) this.removeBullet(id);
     }

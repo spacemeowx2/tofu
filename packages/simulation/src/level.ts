@@ -1,23 +1,23 @@
 import type { TeamId, WallSurfaceId } from "@tofu/protocol";
 
 export type LevelBox = {
-  id: string;
-  x: number;
-  z: number;
-  width: number;
-  depth: number;
-  height: number;
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
+  readonly width: number;
+  readonly depth: number;
+  readonly height: number;
 };
 
-export type LevelSpawn = { x: number; z: number };
+export type LevelSpawn = { readonly x: number; readonly z: number };
 
 export type LevelDefinition = {
-  id: string;
-  displayName: string;
-  halfSize: number;
-  arenaWallHeight: number;
-  obstacles: readonly LevelBox[];
-  spawns: Readonly<Record<TeamId, readonly LevelSpawn[]>>;
+  readonly id: string;
+  readonly displayName: string;
+  readonly halfSize: number;
+  readonly arenaWallHeight: number;
+  readonly obstacles: readonly LevelBox[];
+  readonly spawns: Readonly<Record<TeamId, readonly LevelSpawn[]>>;
 };
 
 export type WallSurface = {
@@ -46,6 +46,20 @@ export const TOFU_TEST_LEVEL: LevelDefinition = {
   spawns: {
     0: [{ x: -7.5, z: -6.5 }, { x: -7.5, z: 6.5 }, { x: -4.5, z: 0 }],
     1: [{ x: 7.5, z: 6.5 }, { x: 7.5, z: -6.5 }, { x: 4.5, z: 0 }]
+  }
+};
+
+export const COMPACT_TEST_LEVEL: LevelDefinition = {
+  id: "compact-test",
+  displayName: "紧凑测试场",
+  halfSize: 8,
+  arenaWallHeight: 1.2,
+  obstacles: [
+    { id: "center-cover", x: 0, z: 0, width: 2, depth: 2, height: 1.6 }
+  ],
+  spawns: {
+    0: [{ x: -5, z: 0 }],
+    1: [{ x: 5, z: 0 }]
   }
 };
 

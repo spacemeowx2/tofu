@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./content": "./src/content.ts",
+    "./coordinates": "./src/coordinates.ts",
     "./ink": "./src/ink.ts",
     "./level": "./src/level.ts",
     "./physics": "./src/physics.ts",

@@ -9,6 +9,7 @@ type SurfaceGrid = {
   height: number;
   owners: Uint8Array;
   ticks: Uint32Array;
+  writers: Uint32Array;
   dirtyTiles: Set<string>;
 };
 
@@ -23,11 +24,12 @@ export type InkTileSnapshot = {
   height: number;
   owners: number[];
   ticks: number[];
+  writers: number[];
   hash: number;
 };
 
 export type InkFieldSnapshot = {
-  version: 1;
+  version: 2;
   resolution: number;
   tileSize: number;
   tiles: InkTileSnapshot[];
@@ -73,12 +75,19 @@ export class TiledInkField {
   }
 
   paint(stamp: PaintStamp, tick = 0) {
+    const writer = hashWriter(stamp.id);
     if (stamp.surfaceId === "ground") {
-      this.paintGround(stamp, tick);
-      return;
+      return this.snapshotsForKeys(
+        this.ground,
+        this.paintGround(stamp, tick, writer)
+      );
     }
     const entry = this.walls.get(stamp.surfaceId);
-    if (entry) this.paintWall(entry.surface, entry.grid, stamp, tick);
+    if (!entry) return [];
+    return this.snapshotsForKeys(
+      entry.grid,
+      this.paintWall(entry.surface, entry.grid, stamp, tick, writer)
+    );
   }
 
   tileHashes(dirtyOnly = false): InkTileHash[] {
@@ -106,11 +115,13 @@ export class TiledInkField {
     const height = Math.min(this.tileSize, grid.height - startY);
     const owners: number[] = [];
     const ticks: number[] = [];
+    const writers: number[] = [];
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
         const index = (startY + y) * grid.width + startX + x;
         owners.push(grid.owners[index]);
         ticks.push(grid.ticks[index]);
+        writers.push(grid.writers[index]);
       }
     }
     return {
@@ -124,7 +135,8 @@ export class TiledInkField {
       height,
       owners,
       ticks,
-      hash: hashArrays(owners, ticks)
+      writers,
+      hash: hashArrays(owners, ticks, writers)
     };
   }
 
@@ -144,7 +156,10 @@ export class TiledInkField {
       snapshot.width <= 0 ||
       snapshot.height <= 0 ||
       snapshot.width > this.tileSize ||
-      snapshot.height > this.tileSize
+      snapshot.height > this.tileSize ||
+      !Array.isArray(snapshot.owners) ||
+      !Array.isArray(snapshot.ticks) ||
+      !Array.isArray(snapshot.writers)
     ) return false;
     const startX = snapshot.tileX * snapshot.tileSize;
     const startY = snapshot.tileY * snapshot.tileSize;
@@ -153,20 +168,31 @@ export class TiledInkField {
       startY + snapshot.height > grid.height ||
       snapshot.owners.length !== snapshot.width * snapshot.height ||
       snapshot.ticks.length !== snapshot.owners.length ||
+      snapshot.writers.length !== snapshot.owners.length ||
       snapshot.owners.some((owner) => owner !== 0 && owner !== 1 && owner !== NEUTRAL) ||
       snapshot.ticks.some((tick) => !Number.isSafeInteger(tick) || tick < 0) ||
-      snapshot.hash !== hashArrays(snapshot.owners, snapshot.ticks)
+      snapshot.writers.some((writer) => !Number.isSafeInteger(writer) || writer < 0 || writer > 0xffff_ffff) ||
+      snapshot.hash !== hashArrays(snapshot.owners, snapshot.ticks, snapshot.writers)
     ) return false;
+    let changed = false;
     for (let y = 0; y < snapshot.height; y += 1) {
       for (let x = 0; x < snapshot.width; x += 1) {
         const sourceIndex = y * snapshot.width + x;
         const targetIndex = (startY + y) * grid.width + startX + x;
-        if (snapshot.ticks[sourceIndex] < grid.ticks[targetIndex]) continue;
+        if (
+          snapshot.ticks[sourceIndex] < grid.ticks[targetIndex] ||
+          (
+            snapshot.ticks[sourceIndex] === grid.ticks[targetIndex] &&
+            snapshot.writers[sourceIndex] <= grid.writers[targetIndex]
+          )
+        ) continue;
         grid.owners[targetIndex] = snapshot.owners[sourceIndex];
         grid.ticks[targetIndex] = snapshot.ticks[sourceIndex];
+        grid.writers[targetIndex] = snapshot.writers[sourceIndex];
+        changed = true;
       }
     }
-    grid.dirtyTiles.add(tileKey(snapshot.tileX, snapshot.tileY));
+    if (changed) grid.dirtyTiles.add(tileKey(snapshot.tileX, snapshot.tileY));
     return true;
   }
 
@@ -178,16 +204,17 @@ export class TiledInkField {
         if (tile) tiles.push(tile);
       }
     }
-    return { version: 1, resolution: this.resolution, tileSize: this.tileSize, tiles };
+    return { version: 2, resolution: this.resolution, tileSize: this.tileSize, tiles };
   }
 
   restore(snapshot: InkFieldSnapshot) {
-    if (snapshot.version !== 1 || snapshot.resolution !== this.resolution || snapshot.tileSize !== this.tileSize) {
+    if (snapshot.version !== 2 || snapshot.resolution !== this.resolution || snapshot.tileSize !== this.tileSize) {
       throw new Error("Incompatible ink snapshot");
     }
     for (const grid of this.grids()) {
       grid.owners.fill(NEUTRAL);
       grid.ticks.fill(0);
+      grid.writers.fill(0);
       grid.dirtyTiles.clear();
     }
     snapshot.tiles.forEach((tile) => this.applyTileSnapshot(tile));
@@ -206,7 +233,8 @@ export class TiledInkField {
     return snapshots;
   }
 
-  private paintGround(stamp: PaintStamp & { surfaceId: "ground" }, tick: number) {
+  private paintGround(stamp: PaintStamp & { surfaceId: "ground" }, tick: number, writer: number) {
+    const changedTiles = new Set<string>();
     const maxRadius = Math.max(stamp.radiusU, stamp.radiusV);
     const min = this.groundCell(stamp.x - maxRadius, stamp.z - maxRadius, true)!;
     const max = this.groundCell(stamp.x + maxRadius, stamp.z + maxRadius, true)!;
@@ -215,12 +243,16 @@ export class TiledInkField {
         const worldX = (x + 0.5) / this.ground.width * this.level.halfSize * 2 - this.level.halfSize;
         const worldZ = (y + 0.5) / this.ground.height * this.level.halfSize * 2 - this.level.halfSize;
         if (!ellipseContains(worldX - stamp.x, worldZ - stamp.z, stamp.radiusU, stamp.radiusV, stamp.rotation)) continue;
-        setCell(this.ground, x, y, stamp.team, tick, this.tileSize);
+        if (setCell(this.ground, x, y, stamp.team, tick, writer, this.tileSize)) {
+          changedTiles.add(tileKey(Math.floor(x / this.tileSize), Math.floor(y / this.tileSize)));
+        }
       }
     }
+    return changedTiles;
   }
 
-  private paintWall(surface: WallSurface, grid: SurfaceGrid, stamp: PaintStamp, tick: number) {
+  private paintWall(surface: WallSurface, grid: SurfaceGrid, stamp: PaintStamp, tick: number, writer: number) {
+    const changedTiles = new Set<string>();
     const stampU = surface.axis === "x" ? stamp.z : stamp.x;
     const maxRadius = Math.max(stamp.radiusU, stamp.radiusV);
     const minU = Math.max(0, Math.floor((stampU - maxRadius - surface.minAlong) / (surface.maxAlong - surface.minAlong) * grid.width));
@@ -232,9 +264,12 @@ export class TiledInkField {
         const worldU = surface.minAlong + (x + 0.5) / grid.width * (surface.maxAlong - surface.minAlong);
         const worldV = (y + 0.5) / grid.height * surface.height;
         if (!ellipseContains(worldU - stampU, worldV - stamp.y, stamp.radiusU, stamp.radiusV, stamp.rotation)) continue;
-        setCell(grid, x, y, stamp.team, tick, this.tileSize);
+        if (setCell(grid, x, y, stamp.team, tick, writer, this.tileSize)) {
+          changedTiles.add(tileKey(Math.floor(x / this.tileSize), Math.floor(y / this.tileSize)));
+        }
       }
     }
+    return changedTiles;
   }
 
   private groundCell(x: number, z: number, clamp = false) {
@@ -264,20 +299,48 @@ export class TiledInkField {
     yield this.ground;
     for (const { grid } of this.walls.values()) yield grid;
   }
+
+  private snapshotsForKeys(grid: SurfaceGrid, keys: ReadonlySet<string>) {
+    const snapshots: InkTileSnapshot[] = [];
+    for (const key of keys) {
+      const [tileX, tileY] = key.split(":").map(Number);
+      const snapshot = this.snapshotTile(grid.surfaceId, tileX, tileY);
+      if (snapshot) snapshots.push(snapshot);
+    }
+    return snapshots;
+  }
 }
 
 function createGrid(surfaceId: PaintSurfaceId, width: number, height: number): SurfaceGrid {
   const owners = new Uint8Array(width * height);
   owners.fill(NEUTRAL);
-  return { surfaceId, width, height, owners, ticks: new Uint32Array(width * height), dirtyTiles: new Set() };
+  return {
+    surfaceId,
+    width,
+    height,
+    owners,
+    ticks: new Uint32Array(width * height),
+    writers: new Uint32Array(width * height),
+    dirtyTiles: new Set()
+  };
 }
 
-function setCell(grid: SurfaceGrid, x: number, y: number, team: TeamId, tick: number, tileSize: number) {
+function setCell(
+  grid: SurfaceGrid,
+  x: number,
+  y: number,
+  team: TeamId,
+  tick: number,
+  writer: number,
+  tileSize: number
+) {
   const index = y * grid.width + x;
-  if (tick < grid.ticks[index]) return;
+  if (tick < grid.ticks[index] || (tick === grid.ticks[index] && writer <= grid.writers[index])) return false;
   grid.owners[index] = team;
   grid.ticks[index] = tick;
+  grid.writers[index] = writer;
   grid.dirtyTiles.add(tileKey(Math.floor(x / tileSize), Math.floor(y / tileSize)));
+  return true;
 }
 
 function* tileCoordinates(grid: SurfaceGrid, tileSize: number, dirtyOnly: boolean) {
@@ -300,14 +363,16 @@ function hashTile(grid: SurfaceGrid, tileX: number, tileY: number, tileSize: num
   const height = Math.min(tileSize, grid.height - startY);
   const owners: number[] = [];
   const ticks: number[] = [];
+  const writers: number[] = [];
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const index = (startY + y) * grid.width + startX + x;
       owners.push(grid.owners[index]);
       ticks.push(grid.ticks[index]);
+      writers.push(grid.writers[index]);
     }
   }
-  return hashArrays(owners, ticks);
+  return hashArrays(owners, ticks, writers);
 }
 
 function ownerToTeam(owner: number): TeamId | null {
@@ -318,15 +383,26 @@ function tileKey(tileX: number, tileY: number) {
   return `${tileX}:${tileY}`;
 }
 
-function hashArrays(owners: readonly number[], ticks: readonly number[]) {
+function hashArrays(owners: readonly number[], ticks: readonly number[], writers: readonly number[]) {
   let hash = 2166136261;
   for (let index = 0; index < owners.length; index += 1) {
     hash ^= owners[index];
     hash = Math.imul(hash, 16777619);
     hash ^= ticks[index];
     hash = Math.imul(hash, 16777619);
+    hash ^= writers[index];
+    hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function hashWriter(id: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0 || 1;
 }
 
 function ellipseContains(deltaU: number, deltaV: number, radiusU: number, radiusV: number, rotation: number) {

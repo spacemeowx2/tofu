@@ -4,7 +4,7 @@
 
 默认所有权从当前版本起就是 peer-owned：每个客户端推进自己的移动和射击模拟。demo 暂时通过 Colyseus 中心节点转发带所有权的 peer 协议包；服务端不持有玩家、子弹或血量世界。后续把传输适配器替换为 WebRTC full mesh，不改玩法和消息协议。详细决策见 [ADR 0001：P2P 联机与物理引擎架构](docs/architecture/0001-p2p-networking-and-physics.md)。
 
-玩法运行时已经拆成固定 tick `GameWorld`、输入、摄像机、网络会话和 Babylon 渲染边界；关卡/武器为数据定义，墨水使用可校验的 ownership tile，碰撞默认由 Rapier WASM shape cast 提供。模块职责和扩展方式见 [ADR 0002：可扩展游戏运行时边界](docs/architecture/0002-game-runtime-boundaries.md)。
+玩法运行时已经拆成固定 tick `GameWorld`、应用装配、控制器、输入、摄像机、网络会话、HUD 和 Babylon 渲染边界；关卡/武器通过 `GameContentDefinition` 注入，墨水使用可校验并可局部同步的 ownership tile，生产循环只允许 Rapier WASM shape cast。模块职责和扩展方式见 [ADR 0002：可扩展游戏运行时边界](docs/architecture/0002-game-runtime-boundaries.md)。
 
 ## 运行
 
@@ -42,14 +42,14 @@ pnpm test:architecture
 pnpm smoke
 ```
 
-`pnpm test:architecture` 验证固定 tick、数据驱动定义、世界 snapshot/restore、墨水 tile/hash 和 Rapier shape cast。`pnpm smoke` 会创建一个独立房间并断言：中心节点只转发 peer 包、不拥有玩法状态、拒绝伪造 owner、重连保持原 peer/team；共享模拟同时验证跳跃、己方地面潜水加速、圆角 capsule 命中，以及小绿的连射速度、扇形散布、弹道落墨和不规则墨斑。
+`pnpm test:architecture` 验证固定 tick、第二武器/第二关卡、Rapier 世界 snapshot/restore 后继续演算、墨水 tile/hash、同 tick 冲突收敛和旧 tile 合并。`pnpm smoke` 会创建一个独立房间并断言：中心节点只转发 peer 包、不拥有玩法状态、拒绝伪造 owner、重连保持原 peer/team；共享模拟同时验证跳跃、己方地面潜水加速、圆角 capsule 命中，以及小绿的扇形散布、瞄准俯仰和弹道落墨。
 
 ## 当前原型边界
 
-- `apps/client`：生命周期装配，以及独立的输入、摄像机、网络会话和 Babylon 渲染模块。
+- `apps/client`：薄入口、生命周期装配、控制器，以及独立的输入、摄像机、网络会话、HUD 和 Babylon 渲染模块。
 - `apps/server`：Colyseus roster、coordinator 和中心转发；不推进 simulation tick。
 - `packages/protocol`：带版本、owner、sequence 和 simulation tick 的平台无关协议。
-- `packages/simulation`：平台无关的 `GameWorld`、关卡/武器定义、墨水 ownership tile、Rapier/解析物理适配器，可运行在浏览器 peer 或公平模式服务端。
+- `packages/simulation`：平台无关的 `GameWorld`、内容/关卡/武器定义、墨水 ownership tile、生产 Rapier 与显式测试解析适配器，可运行在浏览器 peer 或公平模式服务端。
 - `scripts/smoke-architecture.ts`：纯本地架构边界和 snapshot/hash/Rapier 回归测试。
 - `scripts/smoke-multiplayer.ts`：真实双客户端转发与共享模拟烟雾测试。
 

@@ -4,6 +4,7 @@ import {
   PLAYER_DIVE_RADIUS,
   PLAYER_RADIUS,
   type PaintSurfaceId,
+  type PhysicsKind,
   type PlayerSnapshot,
   type WallSurfaceId
 } from "@tofu/protocol";
@@ -19,7 +20,7 @@ export type ProjectileImpact = {
 export type WallContact = WallSurface & { x: number; y: number; z: number };
 
 export interface PhysicsAdapter {
-  readonly kind: "analytic" | "rapier";
+  readonly kind: PhysicsKind;
   resolvePlayerMovement(
     player: PlayerSnapshot,
     delta: { x: number; z: number },

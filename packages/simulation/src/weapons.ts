@@ -1,33 +1,38 @@
 import type { WeaponId } from "@tofu/protocol";
 
 export type WeaponDefinition = {
-  id: WeaponId;
-  displayName: string;
-  fireIntervalSeconds: number;
-  damage: number;
-  projectile: {
-    speed: number;
-    radius: number;
-    gravity: number;
-    lifetime: number;
-    paintRange: number;
-    falloffSpeedMultiplier: number;
+  readonly id: WeaponId;
+  readonly displayName: string;
+  readonly fireIntervalSeconds: number;
+  readonly damage: number;
+  readonly projectile: {
+    readonly speed: number;
+    readonly radius: number;
+    readonly gravity: number;
+    readonly lifetime: number;
+    readonly paintRange: number;
+    readonly falloffSpeedMultiplier: number;
   };
-  spread: {
-    groundDegrees: number;
-    airDegrees: number;
+  readonly spread: {
+    readonly groundDegrees: number;
+    readonly airDegrees: number;
   };
-  muzzle: {
-    forward: number;
-    side: number;
-    height: number;
+  readonly muzzle: {
+    readonly forward: number;
+    readonly side: number;
+    readonly height: number;
   };
-  paint: {
-    footEveryShots: number;
-    trailPatterns: readonly (readonly number[])[];
-    impactMainRadius: readonly [number, number];
-    trailMainRadius: readonly [number, number];
-    footMainRadius: readonly [number, number];
+  readonly paint: {
+    readonly footEveryShots: number;
+    readonly footForwardOffset: number;
+    readonly trailPatterns: readonly (readonly number[])[];
+    readonly splats: Readonly<Record<"impact" | "trail" | "foot", {
+      readonly mainRadius: readonly [number, number];
+      readonly satelliteCount: number;
+      readonly forwardRange: readonly [number, number];
+      readonly lateralRange: readonly [number, number];
+      readonly radiusScaleRange: readonly [number, number];
+    }>>;
   };
 };
 
@@ -55,6 +60,7 @@ export const SPLATTERSHOT: WeaponDefinition = {
   },
   paint: {
     footEveryShots: 4,
+    footForwardOffset: 0.32,
     trailPatterns: [
       [0.7, 3.1],
       [1.45],
@@ -63,24 +69,75 @@ export const SPLATTERSHOT: WeaponDefinition = {
       [1.1],
       [1.8, 4.55]
     ],
-    impactMainRadius: [0.68, 0.46],
-    trailMainRadius: [0.3, 0.24],
-    footMainRadius: [0.46, 0.38]
+    splats: {
+      impact: {
+        mainRadius: [0.68, 0.46],
+        satelliteCount: 5,
+        forwardRange: [0.32, 1.04],
+        lateralRange: [0.16, 0.58],
+        radiusScaleRange: [0.2, 0.52]
+      },
+      trail: {
+        mainRadius: [0.3, 0.24],
+        satelliteCount: 2,
+        forwardRange: [0.32, 0.66],
+        lateralRange: [0.16, 0.58],
+        radiusScaleRange: [0.2, 0.52]
+      },
+      foot: {
+        mainRadius: [0.46, 0.38],
+        satelliteCount: 2,
+        forwardRange: [0.16, 0.38],
+        lateralRange: [0.08, 0.28],
+        radiusScaleRange: [0.18, 0.42]
+      }
+    }
   }
 };
 
-const WEAPONS = new Map<WeaponId, WeaponDefinition>([[SPLATTERSHOT.id, SPLATTERSHOT]]);
+export const SPLATTERSHOT_JR: WeaponDefinition = {
+  ...SPLATTERSHOT,
+  id: "splattershot-jr",
+  displayName: "新叶 / 斯普拉射击枪 联名",
+  fireIntervalSeconds: 0.09,
+  damage: 28,
+  projectile: { ...SPLATTERSHOT.projectile, paintRange: 6.6 },
+  spread: { groundDegrees: 6.4, airDegrees: 13.2 },
+  paint: {
+    ...SPLATTERSHOT.paint,
+    footEveryShots: 3,
+    splats: {
+      ...SPLATTERSHOT.paint.splats,
+      impact: {
+        ...SPLATTERSHOT.paint.splats.impact,
+        mainRadius: [0.74, 0.5]
+      }
+    }
+  }
+};
 
-export function getWeaponDefinition(id: WeaponId): WeaponDefinition {
-  const weapon = findWeaponDefinition(id);
-  if (!weapon) throw new Error(`Unknown weapon: ${id}`);
-  return weapon;
+export class WeaponCatalog {
+  private readonly definitions: ReadonlyMap<WeaponId, WeaponDefinition>;
+
+  constructor(definitions: readonly WeaponDefinition[]) {
+    const entries = definitions.map((definition) => [definition.id, definition] as const);
+    if (new Set(entries.map(([id]) => id)).size !== entries.length) throw new Error("Duplicate weapon id");
+    this.definitions = new Map(entries);
+  }
+
+  get(id: WeaponId): WeaponDefinition {
+    const weapon = this.definitions.get(id);
+    if (!weapon) throw new Error(`Unknown weapon: ${id}`);
+    return weapon;
+  }
+
+  find(id: WeaponId): WeaponDefinition | undefined {
+    return this.definitions.get(id);
+  }
+
+  list(): readonly WeaponDefinition[] {
+    return [...this.definitions.values()];
+  }
 }
 
-export function findWeaponDefinition(id: WeaponId): WeaponDefinition | undefined {
-  return WEAPONS.get(id);
-}
-
-export function listWeaponDefinitions(): readonly WeaponDefinition[] {
-  return [...WEAPONS.values()];
-}
+export const DEFAULT_WEAPONS = new WeaponCatalog([SPLATTERSHOT, SPLATTERSHOT_JR]);

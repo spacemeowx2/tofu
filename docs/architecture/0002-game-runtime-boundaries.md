@@ -1,7 +1,7 @@
 # ADR 0002: 可扩展游戏运行时边界
 
 - 状态：采用并已落地
-- 日期：2026-07-25
+- 日期：2026-07-26
 - 范围：客户端组织、共享模拟、关卡/武器数据、墨水同步、物理适配器
 
 ## 背景
@@ -26,8 +26,11 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 | `InputController` | 键盘、Pointer Lock、软视角、跳跃/潜水/射击意图 | 修改玩家坐标 |
 | `ThirdPersonCamera` | yaw/pitch、相机相对移动方向、准星 ray pick、跟随 | 发射子弹 |
 | `PeerSession` | 给 transport 包补 owner、sequence、simulation tick | Colyseus/WebRTC 细节、玩法校验 |
+| `GameSession` | roster、协议校验、远端命令路由、墨水 hash/tile 协商 | 直接改 Map、推进 fixed tick |
 | `GameRenderer` | Babylon 场景、关卡 mesh、角色/子弹插值、墨水纹理 | 决定命中、地面归属或移动 |
-| `main.ts` | 创建上述对象、把世界事件连接到网络和视图 | 保存第二份玩法世界 |
+| `GameController` | 把输入/相机意图交给世界，把世界事件交给 session/renderer | 保存第二份玩法世界 |
+| `GameApplication` | Rapier 初始化、内容注入、生命周期装配 | 玩法规则、网络包分发 |
+| `main.ts` | 选择 `GameContentDefinition` 并启动应用 | bootstrap、玩法、HUD、存储 |
 
 `GameTransport` 仍是网络端口；`PeerSession` 是连接玩法入口与该端口的会话层。替换成 WebRTC adapter 时，输入、世界和渲染模块不变。
 
@@ -39,7 +42,7 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 - `players` 与 `bullets`；
 - `TiledInkField`；
 - 当前 `LevelDefinition`；
-- 可替换的 `PhysicsAdapter`；
+- 构造时注入、之后不可替换的 `PhysicsAdapter`；
 - `shoot()` 和 `step()` 产生的 paint、hit、bullet-removed 事件；
 - `snapshot()` / `restore()`，供重连、回放、host migration 和 server peer 接管。
 
@@ -49,7 +52,7 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 
 `LevelDefinition` 包含稳定地图 ID、边界、墙高、障碍物和双方出生点。渲染 mesh、解析碰撞器、Rapier collider、墙面 `surfaceId` 与墨水 grid 都从同一份定义生成。
 
-`WeaponDefinition` 包含射速、伤害、弹速、半径、重力、寿命、射程衰减、散布、枪口位置和三种涂墨参数。协议中的 `WeaponId` 是开放字符串，模拟层 registry 负责拒绝未知武器，因此增加武器不要求修改协议 union。
+`WeaponDefinition` 包含射速、伤害、弹速、半径、重力、寿命、射程衰减、散布、枪口位置，以及三种墨斑的主半径、卫星数、偏移和缩放范围。`WeaponCatalog` 随 `GameContentDefinition` 注入世界，`PlayerSnapshot` 明确携带 `weaponId`。协议中的 `WeaponId` 是开放字符串，因此增加武器不要求修改协议 union。仓库同时注册了 `splattershot` 与 `splattershot-jr`，架构测试会用第二武器和不同尺寸的第二关卡创建完整世界，防止定义只停留在类型层。
 
 ### 墨水归属与同步
 
@@ -57,13 +60,14 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 
 - `owners: Uint8Array`：`0/1` 为队伍，`255` 为中性；
 - `ticks: Uint32Array`：每格最后更新时间；
+- `writers: Uint32Array`：同 tick 冲突的稳定 writer，保证双方按相同顺序收敛；
 - dirty tile 集合；
 - 每 tile FNV-1a hash；
 - 全量世界快照、dirty tile 快照和校验后合并。
 
-收到 tile 时会验证维度、边界、owner 值、tick、数组长度和 hash。较旧 tick 不能覆盖较新格子。`InkTextureRenderer` 消费 stamp 或 tile，并负责唯一的世界坐标到 Canvas 纹理变换；潜水和爬墙只查询 `TiledInkField`，不读取像素颜色。
+收到 tile 时会验证维度、边界、owner 值、tick、writer、数组长度和 hash。较旧 tick 不能覆盖较新格子；同 tick 由稳定 writer 决胜。没有改变任何格子的相同/陈旧 tile 不会重新标 dirty，避免 peer 之间持续回声。`GameWorld.applyPaint()` 返回裁决后的局部权威 tile，GPU 只消费这些 tile；原始 stamp 只用于协议和规则输入，不能绕过 ownership 写纹理。`InkTextureRenderer` 负责把权威 tile 投影到 DynamicTexture；潜水和爬墙只查询 `TiledInkField`，不读取像素颜色。
 
-当前 relay demo 在 roster 改变时发送完整 tile snapshot，保证新 peer 能获得已有墨水。后续 WebRTC control 通道应先交换 tile hash，只请求不同 tile。
+运行时每两秒发送 dirty tile，并交换分块 tile hash；接收端只向具体 peer 请求 hash 不同的 tile。hash、请求和 8×8 tile 都受单包数量上限约束，避免 relay/WebRTC DataChannel payload 突增。新 peer 与恢复连接使用同一套局部快照协议，不再发送完整世界墨水。
 
 ### 物理
 
@@ -73,29 +77,30 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 - 可附着墙面探测；
 - 高速墨水弹 shape cast。
 
-`RapierPhysicsAdapter` 从 `LevelDefinition` 创建静态 cuboid collider，使用 capsule/ball shape cast，且不创建动态子弹刚体。`AnalyticPhysicsAdapter` 只作为 WASM 初始化失败时的降级和对照测试。两者实现同一接口，因此 simulation 不依赖 Babylon、DOM、Colyseus 或 Node。
+`RapierPhysicsAdapter` 从 `LevelDefinition` 创建静态 cuboid collider，使用 capsule/ball shape cast，且不创建动态子弹刚体。生产应用必须先完成 Rapier 初始化才会构造 `GameWorld` 和启动循环；失败时停在错误状态，不允许静默切到另一种物理。`AnalyticPhysicsAdapter` 只保留为显式测试工具。完整快照携带 `physicsKind`，实时 packet header 携带并校验 `contentId`、`levelId` 和 `physicsKind`；恢复或实时联机都会拒绝不兼容世界，peer 不会在不知情时混用 adapter/关卡/内容。
 
 ## 状态流
 
 ```text
 InputController ─┐
-ThirdPersonCamera ├─> GameWorld.step/shoot ─> GameWorldEvent ─> PeerSession ─> GameTransport
+ThirdPersonCamera ├─> GameController ─> GameWorld.step/shoot ─> GameWorldEvent ─> GameSession ─> PeerSession ─> GameTransport
                  │             │                    │
                  │             └─ TiledInkField     └─> GameRenderer
                  └──────── movement/aim                  │
                                                         └─ Babylon/GPU
 ```
 
-远端数据按相反方向进入：`GameTransport -> PeerSession -> GameWorld -> GameRenderer`。渲染对象不反向写回模拟。
+远端数据按相反方向进入：`GameTransport -> PeerSession -> GameSession -> GameWorld -> GameRenderer`。渲染对象不反向写回模拟。
 
 ## 验证
 
 `pnpm test:architecture` 会断言：
 
 - render delta 被转换为稳定 fixed tick；
-- 关卡/武器 registry 可用；
-- 中性墨水、dirty tile、hash、复制和篡改拒绝；
-- `GameWorld` 射击事件和 snapshot/restore；
+- 第二武器和不同尺寸第二关卡确实驱动出生点、UV 和完整世界；
+- 中性墨水、dirty tile、hash、同 tick 双向收敛、旧/相同 tile 不回声、旧 tile 合并和篡改拒绝；
+- Rapier `GameWorld` 射击事件和 snapshot/restore 后继续确定性 step；
+- 不兼容 analytic peer packet 被 Rapier session 拒绝；
 - Rapier capsule 不能穿墙；
 - Rapier projectile cast 返回正确的墙面 `surfaceId`。
 

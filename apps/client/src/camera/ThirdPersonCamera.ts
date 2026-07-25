@@ -54,7 +54,7 @@ export class ThirdPersonCamera {
     return { x: movement.x, z: movement.z };
   }
 
-  updateAim(player: PlayerSnapshot | undefined, weapon: WeaponDefinition) {
+  updateAim(player: Readonly<PlayerSnapshot> | undefined, weapon: WeaponDefinition) {
     const viewDirection = this.viewDirection();
     if (!player) {
       this.aim = viewDirection;

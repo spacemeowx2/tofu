@@ -1,8 +1,11 @@
-import { PROTOCOL_VERSION, type PeerPacket } from "@tofu/protocol";
+import { PROTOCOL_VERSION, type PeerPacket, type PhysicsKind } from "@tofu/protocol";
 import type { GameTransport, PeerInfo, TransportSession } from "../transport";
 
 type WithoutPacketHeader<T> = T extends unknown
-  ? Omit<T, "protocolVersion" | "peerId" | "sequence" | "simulationTick">
+  ? Omit<
+      T,
+      "protocolVersion" | "contentId" | "levelId" | "physicsKind" | "peerId" | "sequence" | "simulationTick"
+    >
   : never;
 export type OutgoingPeerPacket = WithoutPacketHeader<PeerPacket>;
 
@@ -11,7 +14,14 @@ export class PeerSession {
   private peerId = "";
   private simulationTick = 0;
 
-  constructor(private readonly transport: GameTransport) {}
+  constructor(
+    private readonly transport: GameTransport,
+    private readonly compatibility: {
+      contentId: string;
+      levelId: string;
+      physicsKind: PhysicsKind;
+    }
+  ) {}
 
   connect(
     name: string,
@@ -34,6 +44,7 @@ export class PeerSession {
     this.transport.send({
       ...payload,
       protocolVersion: PROTOCOL_VERSION,
+      ...this.compatibility,
       peerId: this.peerId,
       sequence: ++this.sequence,
       simulationTick: this.simulationTick

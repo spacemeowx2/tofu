@@ -1,19 +1,16 @@
 import { ColyseusSDK, type Room } from "@colyseus/sdk";
-import { PROTOCOL_VERSION, ROOM_NAME, type BulletSnapshot, type PeerPacket, type RelayedPeerPacket } from "@tofu/protocol";
 import {
-  bulletHitsPlayer,
-  createSplattershotPaintStamps,
-  createPlayer,
-  findWallContact,
-  groundPointToCanvasUv,
-  InkField,
-  spawnBullet,
-  SPLATTERSHOT_PROFILE,
-  stepBullet,
-  stepPlayer,
-  wallPointToCanvasUv,
-  WALL_SURFACES
-} from "@tofu/simulation";
+  PROTOCOL_VERSION,
+  ROOM_NAME,
+  type PeerPacket,
+  type RelayedPeerPacket
+} from "@tofu/protocol";
+import { groundPointToCanvasUv, wallPointToCanvasUv } from "../packages/simulation/src/coordinates.js";
+import { TOFU_DEMO_CONTENT } from "../packages/simulation/src/content.js";
+import { TOFU_TEST_LEVEL, createLevelWallSurfaces } from "../packages/simulation/src/level.js";
+import { createRapierPhysicsAdapter } from "../packages/simulation/src/rapier-physics.js";
+import { SPLATTERSHOT } from "../packages/simulation/src/weapons.js";
+import { GameWorld } from "../packages/simulation/src/world.js";
 
 type Peer = { id: string; name: string; team: number };
 type PeerMap = { get(id: string): Peer | undefined; get size(): number };
@@ -27,6 +24,16 @@ const peerIdA = "smoke-a-stable";
 const peerIdB = "smoke-b-stable";
 let roomA: Room | undefined;
 let roomB: Room | undefined;
+const worlds: GameWorld[] = [];
+
+async function createWorld() {
+  const world = new GameWorld(
+    TOFU_TEST_LEVEL,
+    await createRapierPhysicsAdapter(TOFU_TEST_LEVEL)
+  );
+  worlds.push(world);
+  return world;
+}
 
 try {
   roomA = await clientA.create(ROOM_NAME, { name: "Smoke-A", peerId: peerIdA });
@@ -42,16 +49,24 @@ try {
     throw new Error("relay room unexpectedly owns gameplay state");
   }
 
-  const player = createPlayer(peerIdA, peerA.name, peerA.team as 0 | 1);
+  const relayWorld = await createWorld();
+  const relayPlayer = relayWorld.createPlayer(
+    peerIdA,
+    peerA.name,
+    peerA.team as 0 | 1,
+    SPLATTERSHOT.id
+  );
   const packet: PeerPacket = {
     protocolVersion: PROTOCOL_VERSION,
+    contentId: TOFU_DEMO_CONTENT.id,
+    levelId: TOFU_TEST_LEVEL.id,
+    physicsKind: "rapier",
     kind: "player_state",
     peerId: peerIdA,
     sequence: 1,
     simulationTick: 10,
-    player
+    player: { ...relayPlayer }
   };
-
   let received: RelayedPeerPacket | undefined;
   roomB.onMessage<RelayedPeerPacket>("peer_packet", (message) => { received = message; });
   roomA.send("peer_packet", packet);
@@ -60,7 +75,6 @@ try {
   if (!received || received.from !== peerIdA || received.packet.kind !== "player_state") {
     throw new Error("peer packet was not relayed intact");
   }
-
   received = undefined;
   roomA.send("peer_packet", { ...packet, peerId: peerIdB, sequence: 2 });
   await sleep(150);
@@ -71,150 +85,180 @@ try {
   roomB = await clientBReconnect.joinById(roomA.roomId, { name: "Smoke-B", peerId: peerIdB });
   await sleep(200);
   const reconnectedPeer = (roomA.state as LobbyState).peers.get(peerIdB);
-  if (!reconnectedPeer || reconnectedPeer.team !== originalTeam) throw new Error("reconnect changed the peer's original team");
-
-  const walker = createPlayer("walk", "walk", 0);
-  const swimmer = createPlayer("swim", "swim", 0);
-  const ink = new InkField();
-  if (ink.teamAt(swimmer.x, swimmer.z) !== null) throw new Error("ink field was not neutral at match start");
-  ink.paint({ id: "own-ground", team: 0, surfaceId: "ground", x: swimmer.x, y: 0, z: swimmer.z, radiusU: 10, radiusV: 10, rotation: 0 });
-  for (let tick = 0; tick < 60; tick += 1) {
-    stepPlayer(walker, { moveX: 0, moveZ: 1, jumpPressed: false, diving: false, groundTeam: ink.teamAt(walker.x, walker.z) }, 1 / 60);
-    stepPlayer(swimmer, { moveX: 0, moveZ: 1, jumpPressed: false, diving: true, groundTeam: ink.teamAt(swimmer.x, swimmer.z) }, 1 / 60);
+  if (!reconnectedPeer || reconnectedPeer.team !== originalTeam) {
+    throw new Error("reconnect changed the peer's original team");
   }
-  if (swimmer.z - walker.z < 1) throw new Error("diving on own-color ground did not increase speed");
 
-  const neutralSwimmer = createPlayer("neutral", "neutral", 0);
-  neutralSwimmer.x = 7;
-  const neutralWalker = { ...neutralSwimmer, id: "neutral-walk" };
-  for (let tick = 0; tick < 60; tick += 1) {
-    stepPlayer(neutralSwimmer, { moveX: 0, moveZ: 1, jumpPressed: false, diving: true, groundTeam: null }, 1 / 60);
-    stepPlayer(neutralWalker, { moveX: 0, moveZ: 1, jumpPressed: false, diving: false, groundTeam: null }, 1 / 60);
+  const movementWorld = await createWorld();
+  const walker = movementWorld.createPlayer("walk", "walk", 0, SPLATTERSHOT.id);
+  const swimmer = movementWorld.createPlayer("swim", "swim", 0, SPLATTERSHOT.id);
+  if (movementWorld.ink.teamAt(swimmer.x, swimmer.z) !== null) {
+    throw new Error("ink field was not neutral at match start");
   }
-  if (Math.abs(neutralSwimmer.z - neutralWalker.z) > 0.05) throw new Error("neutral ground incorrectly granted dive speed");
+  movementWorld.applyPaint([{
+    id: "own-ground",
+    team: 0,
+    surfaceId: "ground",
+    x: swimmer.x,
+    y: 0,
+    z: swimmer.z + 3,
+    radiusU: 10,
+    radiusV: 10,
+    rotation: 0
+  }]);
+  for (let tick = 0; tick < 60; tick += 1) {
+    movementWorld.step(walker.id, {
+      moveX: 0,
+      moveZ: 1,
+      jumpPressed: false,
+      diving: false,
+      groundTeam: movementWorld.ink.teamAt(walker.x, walker.z)
+    }, 1 / 60);
+    movementWorld.step(swimmer.id, {
+      moveX: 0,
+      moveZ: 1,
+      jumpPressed: false,
+      diving: true,
+      groundTeam: movementWorld.ink.teamAt(swimmer.x, swimmer.z)
+    }, 1 / 60);
+  }
+  if (swimmer.z - walker.z < 1) throw new Error("own-color dive speed was not data-owned by GameWorld");
 
-  const jumper = createPlayer("jump", "jump", 0);
-  stepPlayer(jumper, { moveX: 0, moveZ: 0, jumpPressed: true, diving: false, groundTeam: null }, 1 / 60);
-  if (jumper.y <= 0 || jumper.vy <= 0) throw new Error("jump was not simulated locally");
+  const jumper = movementWorld.createPlayer("jump", "jump", 0, SPLATTERSHOT.id);
+  movementWorld.step(jumper.id, {
+    moveX: 0,
+    moveZ: 0,
+    jumpPressed: true,
+    diving: false,
+    groundTeam: null
+  }, 1 / 60);
+  if (jumper.y <= 0 || jumper.vy <= 0) throw new Error("jump was not simulated by GameWorld");
 
-  const climber = createPlayer("climber", "climber", 0);
-  climber.x = -5.92;
-  climber.z = 0;
-  ink.paint({ id: "own-wall", team: 0, surfaceId: "obstacle-0-nx", x: -5.6, y: 0.5, z: 0, radiusU: 1.25, radiusV: 1.25, rotation: 0 });
-  const wallContact = findWallContact(climber);
-  if (!wallContact) throw new Error("painted wall contact was not detected");
-  stepPlayer(climber, {
+  const climber = movementWorld.createPlayer("climber", "climber", 0, SPLATTERSHOT.id);
+  movementWorld.upsertPlayer({ ...climber, x: -5.92, z: 0 });
+  movementWorld.applyPaint([{
+    id: "own-wall",
+    team: 0,
+    surfaceId: "obstacle-0-nx",
+    x: -5.6,
+    y: 0.5,
+    z: 0,
+    radiusU: 1.25,
+    radiusV: 1.25,
+    rotation: 0
+  }]);
+  const wallContact = movementWorld.wallContactFor(climber.id);
+  if (!wallContact) throw new Error("Rapier wall contact was not detected");
+  movementWorld.step(climber.id, {
     moveX: 1,
     moveZ: 0,
     jumpPressed: false,
     diving: true,
     groundTeam: null,
-    wallContact: { ...wallContact, team: ink.teamAtWall(wallContact.id, wallContact.x, wallContact.y, wallContact.z) }
+    wallContact: {
+      ...wallContact,
+      team: movementWorld.ink.teamAtWall(
+        wallContact.id,
+        wallContact.x,
+        wallContact.y,
+        wallContact.z
+      )
+    }
   }, 1 / 60);
-  if (!climber.wallAttached || climber.y <= 0) throw new Error("Shift did not attach and climb on own-color wall ink");
-
-  const arcProbe: BulletSnapshot = {
-    id: "arc", ownerId: peerIdA, team: 0, x: 0, y: 0.82, z: 0, dx: 0.2, dy: 0.25, dz: 0.2, age: 0,
-    distanceTraveled: 0, paintTrailIndex: 0, seed: 7, weaponId: "splattershot"
-  };
-  const initialVerticalVelocity = arcProbe.dy;
-  let arcImpact: ReturnType<typeof stepBullet>["paintImpact"];
-  let trailPaintCount = 0;
-  for (let tick = 0; tick < 180 && !arcImpact; tick += 1) {
-    const result = stepBullet(arcProbe, 1 / 60);
-    trailPaintCount += result.trailPaintImpacts.length;
-    arcImpact = result.paintImpact;
+  if (!climber.wallAttached || climber.y <= 0) {
+    throw new Error("Shift did not attach and climb on own-color wall ink");
   }
-  if (!arcImpact || arcProbe.dy >= initialVerticalVelocity) throw new Error("projectile did not follow a gravity arc into a paintable surface");
-  if (trailPaintCount === 0) throw new Error("Splattershot projectile did not shed paint along its flight path");
 
-  const spreadPlayer = createPlayer("spread", "spread", 0);
-  const spreadShots = Array.from({ length: 24 }, (_, index) => spawnBullet(
+  const projectileWorld = await createWorld();
+  const shooter = projectileWorld.createPlayer("shooter", "shooter", 0, SPLATTERSHOT.id);
+  const spreadShots = Array.from({ length: 24 }, (_, index) => projectileWorld.shoot(
+    shooter.id,
     `spread:${index}`,
-    spreadPlayer,
     { x: 0, y: 0, z: 1 },
     { x: 0, z: 1 },
-    { x: 1, z: 0 }
-  ));
+    { x: 1, z: 0 },
+    index + 1
+  )!.bullet);
   if (!spreadShots.some((bullet) => bullet.dx < 0) || !spreadShots.some((bullet) => bullet.dx > 0)) {
-    throw new Error("Splattershot spread did not form a deterministic fan");
+    throw new Error("weapon definition did not produce deterministic fan spread");
   }
-  const upwardShot = spawnBullet(
-    "aim-up", spreadPlayer, { x: 0, y: 0.5, z: 0.866 }, { x: 0, z: 1 }, { x: 1, z: 0 }
-  );
-  const downwardShot = spawnBullet(
-    "aim-down", spreadPlayer, { x: 0, y: -0.5, z: 0.866 }, { x: 0, z: 1 }, { x: 1, z: 0 }
-  );
-  if (upwardShot.dy <= 0.3 || downwardShot.dy >= -0.3) {
-    throw new Error("Splattershot discarded the vertical component of the aim direction");
-  }
-  const falloffProbe: BulletSnapshot = {
-    id: "falloff", ownerId: peerIdA, team: 0, x: 0, y: 5, z: 0, dx: 1, dy: 0, dz: 0, age: 0,
-    distanceTraveled: SPLATTERSHOT_PROFILE.paintRange + 0.01, paintTrailIndex: 6, seed: 13, weaponId: "splattershot"
-  };
-  stepBullet(falloffProbe, 1 / 60);
-  if (falloffProbe.x >= 0.12 || falloffProbe.dy >= 0) {
-    throw new Error("Splattershot did not slow and fall after its effective range");
-  }
-  const splatMarks = createSplattershotPaintStamps({
-    id: "splat-test", team: 0, surfaceId: "ground", x: 0, y: 0, z: 0,
-    directionX: 0.3, directionY: -0.2, directionZ: 1, seed: 42, kind: "impact"
-  });
-  if (splatMarks.length !== 6 || new Set(splatMarks.map((stamp) => stamp.radiusU.toFixed(3))).size < 3) {
-    throw new Error("Splattershot impact did not generate an irregular main splat and satellites");
+  const upward = projectileWorld.shoot(
+    shooter.id,
+    "aim-up",
+    { x: 0, y: 0.5, z: 0.866 },
+    { x: 0, z: 1 },
+    { x: 1, z: 0 },
+    25
+  )!.bullet;
+  const downward = projectileWorld.shoot(
+    shooter.id,
+    "aim-down",
+    { x: 0, y: -0.5, z: 0.866 },
+    { x: 0, z: 1 },
+    { x: 1, z: 0 },
+    26
+  )!.bullet;
+  if (upward.dy <= 0.3 || downward.dy >= -0.3) {
+    throw new Error("weapon discarded aim pitch");
   }
 
-  const groundNorthWest = groundPointToCanvasUv({ x: -12, z: 12 });
-  const groundSouthEast = groundPointToCanvasUv({ x: 12, z: -12 });
-  if (groundNorthWest.u !== 0 || groundNorthWest.v !== 0 || groundSouthEast.u !== 1 || groundSouthEast.v !== 1) {
-    throw new Error("ground world-to-canvas transform is mirrored");
+  const arc = projectileWorld.shoot(
+    shooter.id,
+    "arc",
+    { x: 0.2, y: 0.25, z: 0.2 },
+    { x: 0, z: 1 },
+    { x: 1, z: 0 },
+    27
+  )!.bullet;
+  const initialDy = arc.dy;
+  let arcFell = false;
+  let paintEvents = 0;
+  let impactSurface = "";
+  for (let tick = 0; tick < 180 && projectileWorld.bullets.has(arc.id); tick += 1) {
+    for (const event of projectileWorld.step(shooter.id, undefined, 1 / 60)) {
+      if (event.kind === "paint") {
+        paintEvents += 1;
+        impactSurface = event.stamps[0]?.surfaceId ?? impactSurface;
+      }
+    }
+    arcFell ||= (projectileWorld.bullets.get(arc.id)?.dy ?? -Infinity) < initialDy;
   }
-  const xWall = WALL_SURFACES.find((surface) => surface.id === "obstacle-0-nx")!;
-  const oppositeXWall = WALL_SURFACES.find((surface) => surface.id === "obstacle-0-px")!;
-  const zWall = WALL_SURFACES.find((surface) => surface.id === "obstacle-0-nz")!;
-  const oppositeZWall = WALL_SURFACES.find((surface) => surface.id === "obstacle-0-pz")!;
-  const xWallTopStart = wallPointToCanvasUv(xWall, { x: xWall.coordinate, y: xWall.height, z: xWall.minAlong });
-  const oppositeXWallStart = wallPointToCanvasUv(oppositeXWall, { x: oppositeXWall.coordinate, y: 0, z: oppositeXWall.minAlong });
-  const zWallBottomStart = wallPointToCanvasUv(zWall, { x: zWall.minAlong, y: 0, z: zWall.coordinate });
-  const oppositeZWallStart = wallPointToCanvasUv(oppositeZWall, { x: oppositeZWall.minAlong, y: 0, z: oppositeZWall.coordinate });
+  if (projectileWorld.bullets.has(arc.id) || !arcFell || paintEvents === 0) {
+    throw new Error("projectile arc did not produce world-owned paint");
+  }
+
+  const surfaces = createLevelWallSurfaces(TOFU_TEST_LEVEL);
+  const groundNorthWest = groundPointToCanvasUv(
+    { x: -TOFU_TEST_LEVEL.halfSize, z: TOFU_TEST_LEVEL.halfSize },
+    TOFU_TEST_LEVEL.halfSize
+  );
+  const groundSouthEast = groundPointToCanvasUv(
+    { x: TOFU_TEST_LEVEL.halfSize, z: -TOFU_TEST_LEVEL.halfSize },
+    TOFU_TEST_LEVEL.halfSize
+  );
   if (
-    xWallTopStart.u !== 1 || xWallTopStart.v !== 0 ||
-    oppositeXWallStart.u !== 0 || oppositeXWallStart.v !== 1 ||
-    zWallBottomStart.u !== 0 || zWallBottomStart.v !== 1 ||
-    oppositeZWallStart.u !== 1 || oppositeZWallStart.v !== 1
-  ) {
-    throw new Error("wall world-to-canvas transform does not match plane orientation");
+    groundNorthWest.u !== 0 ||
+    groundNorthWest.v !== 0 ||
+    groundSouthEast.u !== 1 ||
+    groundSouthEast.v !== 1
+  ) throw new Error("ground transform is mirrored");
+  const xWall = surfaces.find((surface) => surface.id === "obstacle-0-nx")!;
+  const xWallTopStart = wallPointToCanvasUv(
+    xWall,
+    { x: xWall.coordinate, y: xWall.height, z: xWall.minAlong }
+  );
+  if (xWallTopStart.u !== 1 || xWallTopStart.v !== 0) {
+    throw new Error("wall transform does not match plane orientation");
   }
 
-  const wallProbe: BulletSnapshot = {
-    id: "wall-probe",
-    ownerId: peerIdA,
-    team: 0 as const,
-    x: -6.5,
-    y: 1,
-    z: 0,
-    dx: 1,
-    dy: 0,
-    dz: 0,
-    age: 0,
-    distanceTraveled: 0,
-    paintTrailIndex: 0,
-    seed: 9,
-    weaponId: "splattershot"
-  };
-  const wallProbeResult = stepBullet(wallProbe, 0.1);
-  if (wallProbeResult.paintImpact?.surfaceId !== "obstacle-0-nx" || Math.abs(wallProbeResult.paintImpact.x + 5.6) > 0.001) {
-    throw new Error("fast projectile did not paint its continuous wall intersection");
-  }
-
-  const capsuleTarget = createPlayer("target", "target", 1);
-  const capProbe: BulletSnapshot = {
-    id: "probe",
-    ownerId: "walk",
-    team: 0 as const,
-    x: capsuleTarget.x,
-    y: 1.4,
-    z: capsuleTarget.z,
+  const target = projectileWorld.createPlayer("target", "target", 1, SPLATTERSHOT.id);
+  projectileWorld.addBullet({
+    id: "hit-probe",
+    ownerId: shooter.id,
+    team: shooter.team,
+    x: target.x,
+    y: 1.1,
+    z: target.z,
     dx: 0,
     dy: 0,
     dz: 1,
@@ -222,32 +266,29 @@ try {
     distanceTraveled: 0,
     paintTrailIndex: 0,
     seed: 11,
-    weaponId: "splattershot"
-  };
-  if (!bulletHitsPlayer(capProbe, capsuleTarget)) throw new Error("rounded capsule cap did not register a hit");
+    weaponId: shooter.weaponId
+  });
+  const hit = projectileWorld
+    .step(shooter.id, undefined, 1 / 600)
+    .find((event) => event.kind === "hit");
+  if (!hit) throw new Error("GameWorld capsule hit detection did not produce a hit event");
 
   console.log(JSON.stringify({
     ok: true,
     mode: "peer-owned simulation over central relay",
     roomId: roomA.roomId,
-    teams: [peerA.team, peerB.team],
     reconnectPreservedTeam: true,
-    relayedKind: received?.packet.kind ?? packet.kind,
     ownInkDiveGain: Number((swimmer.z - walker.z).toFixed(2)),
-    jumpHeightAfterFirstTick: Number(jumper.y.toFixed(3)),
     wallAttachAndClimb: true,
-    projectilePaintSurface: arcImpact.surfaceId,
-    splattershotFireRate: `${Math.round(1 / SPLATTERSHOT_PROFILE.fireIntervalSeconds)}/s`,
-    splattershotFanSpread: true,
-    splattershotAimPitch: true,
-    splattershotRangeFalloff: true,
-    splattershotTrailDrops: trailPaintCount,
-    irregularImpactMarks: splatMarks.length,
-    continuousWallImpact: wallProbeResult.paintImpact.surfaceId,
-    typedCanvasTransforms: true,
+    projectilePaintSurface: impactSurface,
+    weaponFireRate: `${Math.round(1 / SPLATTERSHOT.fireIntervalSeconds)}/s`,
+    deterministicFanSpread: true,
+    typedLevelTransforms: true,
+    physics: projectileWorld.physicsKind,
     serverGameplayState: false
   }, null, 2));
 } finally {
+  worlds.forEach((world) => world.dispose());
   await roomB?.leave();
   await roomA?.leave();
 }

@@ -1,7 +1,13 @@
 import RAPIER from "@dimforge/rapier3d-compat";
 import type { PlayerSnapshot, WallSurfaceId } from "@tofu/protocol";
 import { createLevelWallSurfaces, type LevelDefinition, type WallSurface } from "./level.js";
-import type { PhysicsAdapter, ProjectileImpact, Vec3, WallContact } from "./physics.js";
+import {
+  playerCollider,
+  type PhysicsAdapter,
+  type ProjectileImpact,
+  type Vec3,
+  type WallContact
+} from "./physics.js";
 
 type ColliderMetadata =
   | { kind: "obstacle"; boxIndex: number }
@@ -65,8 +71,7 @@ export class RapierPhysicsAdapter implements PhysicsAdapter {
   }
 
   findWallContact(player: PlayerSnapshot): WallContact | undefined {
-    const radius = player.diving ? 0.32 : 0.45;
-    const height = player.diving ? 0.5 : 1.3;
+    const { radius, height } = playerCollider(player);
     const shape = new RAPIER.Capsule(Math.max(0, (height - radius * 2) / 2), radius);
     const position = { x: player.x, y: player.y + height / 2, z: player.z };
     const probeDistance = 0.2;
