@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { PROTOCOL_VERSION, type PeerPacket } from "../packages/protocol/src/index.js";
+import { PLAYER_MAX_HP, PROTOCOL_VERSION, type PeerPacket } from "../packages/protocol/src/index.js";
 import { GameRuntime } from "../apps/client/src/game/GameRuntime.js";
 import { GameSession } from "../apps/client/src/network/GameSession.js";
 import type { GameRenderer } from "../apps/client/src/rendering/GameRenderer.js";
@@ -10,13 +10,14 @@ import type {
 } from "../apps/client/src/transport.js";
 import type { HudView } from "../apps/client/src/ui/HudView.js";
 import { groundPointToCanvasUv } from "../packages/simulation/src/coordinates.js";
-import { TiledInkField } from "../packages/simulation/src/ink.js";
+import { MAX_INK_REVISION, TiledInkField } from "../packages/simulation/src/ink.js";
 import {
   COMPACT_TEST_LEVEL,
   TOFU_TEST_LEVEL,
   createLevelWallSurfaces
 } from "../packages/simulation/src/level.js";
 import { createRapierPhysicsAdapter } from "../packages/simulation/src/rapier-physics.js";
+import { createPaintStamps } from "../packages/simulation/src/systems.js";
 import {
   DEFAULT_WEAPONS,
   SPLATTERSHOT,
@@ -88,6 +89,39 @@ assert.equal(stateSends, 1, "state transmission was not independently scheduled"
 assert.equal(maintenanceRuns, 1, "ink maintenance was not independently scheduled");
 assert.ok(frameSeconds > 0.06, "render-frame delta was not preserved");
 
+const shallowImpact = createPaintStamps({
+  id: "directional-impact",
+  team: 0,
+  surfaceId: "ground",
+  x: 0,
+  y: 0,
+  z: 0,
+  directionX: 1,
+  directionY: 0,
+  directionZ: 0,
+  seed: 1,
+  kind: "impact"
+}, SPLATTERSHOT, createLevelWallSurfaces(TOFU_TEST_LEVEL))[0];
+const steepImpact = createPaintStamps({
+  id: "steep-impact",
+  team: 0,
+  surfaceId: "ground",
+  x: 0,
+  y: 0,
+  z: 0,
+  directionX: 1,
+  directionY: -1,
+  directionZ: 0,
+  seed: 2,
+  kind: "impact"
+}, SPLATTERSHOT, createLevelWallSurfaces(TOFU_TEST_LEVEL))[0];
+assert.ok(shallowImpact.x > 0, "impact paint remained centered on the hit point");
+assert.ok(
+  shallowImpact.radiusU > steepImpact.radiusU &&
+  shallowImpact.radiusU > shallowImpact.radiusV,
+  "shallow impact did not extend farther in the shot direction"
+);
+
 assert.equal(DEFAULT_WEAPONS.get(SPLATTERSHOT.id), SPLATTERSHOT);
 assert.equal(DEFAULT_WEAPONS.get(SPLATTERSHOT_JR.id), SPLATTERSHOT_JR);
 assert.equal(DEFAULT_WEAPONS.list().length, 2, "second weapon is not registered");
@@ -101,6 +135,10 @@ assert.equal(groundPointToCanvasUv({ x: 0, z: 0 }, COMPACT_TEST_LEVEL.halfSize).
 const orangeStamp = {
   id: "peer-orange:paint",
   team: 0 as const,
+  kind: "impact" as const,
+  originX: 1,
+  originY: 0,
+  originZ: -2,
   surfaceId: "ground" as const,
   x: 1,
   y: 0,
@@ -173,7 +211,57 @@ const rapier = await createRapierPhysicsAdapter(TOFU_TEST_LEVEL);
 const world = new GameWorld(TOFU_TEST_LEVEL, rapier);
 assert.equal(world.physicsKind, "rapier");
 const player = world.createPlayer("architecture-player", "Architecture", 0, SPLATTERSHOT.id);
+const secondPlayer = world.createPlayer("architecture-player-2", "Architecture 2", 1, SPLATTERSHOT.id);
+const beforeBatchTick = world.tick;
+world.step([
+  {
+    playerId: player.id,
+    input: { moveX: 0, moveZ: 1, jumpPressed: false, diving: false }
+  },
+  {
+    playerId: player.id,
+    input: { moveX: 0, moveZ: 1, jumpPressed: false, diving: false }
+  },
+  {
+    playerId: secondPlayer.id,
+    input: { moveX: 0, moveZ: 0, jumpPressed: false, diving: false }
+  }
+], 1 / 60);
+assert.equal(world.tick, beforeBatchTick + 1, "multi-authority batch advanced the global tick twice");
+assert.ok(Math.abs(player.vz - 0.5) < 1e-6, "duplicate player command moved one player twice");
+const tapInput = {
+  moveX: 0,
+  moveZ: 0,
+  jumpPressed: false,
+  diving: false,
+  fire: {
+    direction: { x: 0, y: 0, z: 1 },
+    forward: { x: 0, z: 1 },
+    right: { x: 1, z: 0 }
+  }
+};
+const tapShots = [
+  ...world.step([{ playerId: secondPlayer.id, input: tapInput }], 1 / 60),
+  ...world.step([{
+    playerId: secondPlayer.id,
+    input: { moveX: 0, moveZ: 0, jumpPressed: false, diving: false }
+  }], 1 / 60),
+  ...world.step([{ playerId: secondPlayer.id, input: tapInput }], 1 / 60)
+].filter((event) => event.kind === "shot");
+assert.equal(tapShots.length, 1, "release/re-press bypassed the weapon cooldown");
 world.applyPaint([orangeStamp]);
+world.observeInkRevision(5_000);
+world.applyPaint([{ ...orangeStamp, id: "late-peer-paint", x: 2 }]);
+assert.equal(world.inkRevision, 5_001, "local paint did not advance the observed Lamport revision");
+const revisionBeforeInvalidPaint = world.inkRevision;
+assert.deepEqual(
+  world.applyPaint([{ ...orangeStamp, id: "invalid-paint", radiusU: Infinity }]),
+  [],
+  "non-finite paint stamp reached the ink raster"
+);
+assert.equal(world.inkRevision, revisionBeforeInvalidPaint, "invalid paint advanced the Lamport revision");
+assert.equal(world.observeInkRevision(Number.MAX_SAFE_INTEGER), false);
+assert.equal(world.inkRevision, revisionBeforeInvalidPaint, "out-of-range revision overflowed Uint32 ink cells");
 const shot = world.shoot(
   player.id,
   "architecture-shot",
@@ -189,9 +277,18 @@ const input = {
   moveZ: 1,
   jumpPressed: false,
   diving: false,
-  groundTeam: world.ink.teamAt(player.x, player.z)
+  fire: {
+    direction: { x: 0, y: 0.1, z: 1 },
+    forward: { x: 0, z: 1 },
+    right: { x: 1, z: 0 }
+  }
 };
-world.step(player.id, input, 1 / 60);
+assert.equal(
+  world.step([{ playerId: player.id, input }], 1 / 60)
+    .find((event) => event.kind === "shot")?.bullet.id,
+  `${player.id}:1`,
+  "GameWorld did not own the weapon cadence and bullet sequence"
+);
 const snapshot = world.snapshot();
 const restored = new GameWorld(
   TOFU_TEST_LEVEL,
@@ -201,13 +298,41 @@ restored.restore(snapshot);
 assert.deepEqual([...restored.players.values()], [...world.players.values()]);
 assert.deepEqual([...restored.bullets.values()], [...world.bullets.values()]);
 assert.deepEqual(restored.ink.tileHashes(), world.ink.tileHashes());
-world.step(player.id, input, 1 / 60);
-restored.step(player.id, input, 1 / 60);
+const continuedShots: string[] = [];
+const restoredShots: string[] = [];
+for (let tick = 0; tick < 6; tick += 1) {
+  world.step([{ playerId: player.id, input }], 1 / 60).forEach((event) => {
+    if (event.kind === "shot") continuedShots.push(event.bullet.id);
+  });
+  restored.step([{ playerId: player.id, input }], 1 / 60).forEach((event) => {
+    if (event.kind === "shot") restoredShots.push(event.bullet.id);
+  });
+}
+assert.deepEqual(restoredShots, continuedShots);
+assert.deepEqual(continuedShots, [`${player.id}:2`], "snapshot lost the fire cooldown or sequence");
 assert.deepEqual(
   restored.players.get(player.id),
   world.players.get(player.id),
   "restored world did not continue deterministically"
 );
+
+world.applyDamage(secondPlayer.id, PLAYER_MAX_HP);
+for (let tick = 0; tick < 60; tick += 1) {
+  world.step([{ playerId: secondPlayer.id }], 1 / 60);
+}
+restored.restore(world.snapshot());
+const respawns: string[] = [];
+const restoredRespawns: string[] = [];
+for (let tick = 0; tick < 91; tick += 1) {
+  world.step([{ playerId: secondPlayer.id }], 1 / 60).forEach((event) => {
+    if (event.kind === "respawn") respawns.push(event.ownerId);
+  });
+  restored.step([{ playerId: secondPlayer.id }], 1 / 60).forEach((event) => {
+    if (event.kind === "respawn") restoredRespawns.push(event.ownerId);
+  });
+}
+assert.deepEqual(restoredRespawns, respawns);
+assert.deepEqual(respawns, [secondPlayer.id], "snapshot lost the respawn countdown");
 
 const compactWorld = new GameWorld(
   COMPACT_TEST_LEVEL,
@@ -262,6 +387,15 @@ const fakeRenderer = {
     renderedTile = tile;
     renderedTiles.push(tile);
   },
+  applyPaint(
+    _stamps: readonly unknown[],
+    tiles: readonly NonNullable<typeof renderedTile>[]
+  ) {
+    tiles.forEach((tile) => {
+      renderedTile = tile;
+      renderedTiles.push(tile);
+    });
+  },
   removePlayer() {},
   removeBullet() {}
 } as unknown as GameRenderer;
@@ -283,6 +417,86 @@ assert.ok(hashPackets.length > 1, "runtime did not chunk the complete ink hash s
 assert.ok(
   hashPackets.every((packet) => packet.hashes.length <= 24 && JSON.stringify(packet).length < 4096),
   "ink hash packet exceeded the bounded runtime payload"
+);
+const requestsBeforeMalformedPackets = fakeTransport.sent.filter(
+  (packet) => packet.kind === "ink_tile_request"
+).length;
+fakeTransport.emit({
+  protocolVersion: PROTOCOL_VERSION,
+  contentId: "architecture-content",
+  levelId: COMPACT_TEST_LEVEL.id,
+  physicsKind: "rapier",
+  peerId: "session-remote",
+  sequence: 100,
+  simulationTick: 1,
+  inkRevision: MAX_INK_REVISION,
+  kind: "ink_hashes",
+  hashes: []
+});
+assert.equal(sessionWorld.inkRevision, 0, "unaccepted packet header advanced the ink revision");
+fakeTransport.emit({
+  protocolVersion: PROTOCOL_VERSION,
+  contentId: "architecture-content",
+  levelId: COMPACT_TEST_LEVEL.id,
+  physicsKind: "rapier",
+  peerId: "session-remote",
+  sequence: 101,
+  simulationTick: 1,
+  inkRevision: 1,
+  kind: "paint",
+  paintRevision: 1,
+  stamps: [null]
+} as unknown as PeerPacket);
+fakeTransport.emit({
+  protocolVersion: PROTOCOL_VERSION,
+  contentId: "architecture-content",
+  levelId: COMPACT_TEST_LEVEL.id,
+  physicsKind: "rapier",
+  peerId: "session-remote",
+  sequence: 102,
+  simulationTick: 1,
+  inkRevision: 1,
+  kind: "ink_hashes",
+  hashes: [{ surfaceId: "ground", tileX: -1, tileY: 0, hash: 0 }]
+});
+const tilesBeforeMalformedPackets = fakeTransport.sent.filter(
+  (packet) => packet.kind === "ink_tile"
+).length;
+fakeTransport.emit({
+  protocolVersion: PROTOCOL_VERSION,
+  contentId: "architecture-content",
+  levelId: COMPACT_TEST_LEVEL.id,
+  physicsKind: "rapier",
+  peerId: "session-remote",
+  sequence: 103,
+  simulationTick: 1,
+  inkRevision: 1,
+  kind: "ink_tile_request",
+  targetPeerId: sessionPlayer.id,
+  tiles: [null]
+} as unknown as PeerPacket);
+fakeTransport.emit({
+  protocolVersion: PROTOCOL_VERSION,
+  contentId: "architecture-content",
+  levelId: COMPACT_TEST_LEVEL.id,
+  physicsKind: "rapier",
+  peerId: "session-remote",
+  sequence: 104,
+  simulationTick: 1,
+  inkRevision: 1,
+  kind: "ink_tile",
+  tile: null
+} as unknown as PeerPacket);
+assert.equal(sessionWorld.inkRevision, 0, "malformed payload advanced the ink revision");
+assert.equal(
+  fakeTransport.sent.filter((packet) => packet.kind === "ink_tile_request").length,
+  requestsBeforeMalformedPackets,
+  "malformed ink hash requested an out-of-range tile"
+);
+assert.equal(
+  fakeTransport.sent.filter((packet) => packet.kind === "ink_tile").length,
+  tilesBeforeMalformedPackets,
+  "malformed tile request produced a response"
 );
 
 const sessionStamp = {
@@ -309,7 +523,7 @@ const localRuntimeTile = runtimeTilePackets.find((packet) =>
   packet.tile.surfaceId === "ground" &&
   packet.tile.owners.includes(0)
 )!;
-const remoteStaleInk = new TiledInkField(COMPACT_TEST_LEVEL, 128, 8);
+const remoteStaleInk = new TiledInkField(COMPACT_TEST_LEVEL);
 remoteStaleInk.paint({ ...sessionStamp, id: "session-remote:older", team: 1 }, 19);
 const remoteStaleTile = remoteStaleInk.snapshotTile(
   localRuntimeTile.tile.surfaceId,
@@ -322,9 +536,10 @@ fakeTransport.emit({
   levelId: COMPACT_TEST_LEVEL.id,
   physicsKind: "rapier",
   peerId: "session-remote",
-  sequence: 1,
-  simulationTick: 19,
-  kind: "ink_tile",
+    sequence: 1,
+    simulationTick: 19,
+    inkRevision: 19,
+    kind: "ink_tile",
   tile: remoteStaleTile
 });
 assert.equal(
@@ -345,9 +560,11 @@ fakeTransport.emit({
   levelId: COMPACT_TEST_LEVEL.id,
   physicsKind: "rapier",
   peerId: "session-remote",
-  sequence: 2,
-  simulationTick: 19,
-  kind: "paint",
+    sequence: 2,
+    simulationTick: 19,
+    inkRevision: 19,
+    kind: "paint",
+    paintRevision: 19,
   stamps: [{ ...sessionStamp, id: "session-remote:losing-stamp", team: 1 }]
 });
 assert.equal(
@@ -365,14 +582,15 @@ fakeTransport.emit({
   levelId: COMPACT_TEST_LEVEL.id,
   physicsKind: "analytic",
   peerId: "session-remote",
-  sequence: 3,
-  simulationTick: 21,
-  kind: "ink_hashes",
+    sequence: 3,
+    simulationTick: 21,
+    inkRevision: 21,
+    kind: "ink_hashes",
   hashes: [{
     surfaceId: localRuntimeTile.tile.surfaceId,
     tileX: localRuntimeTile.tile.tileX,
     tileY: localRuntimeTile.tile.tileY,
-    hash: localRuntimeTile.tile.hash ^ 1
+    hash: (localRuntimeTile.tile.hash ^ 1) >>> 0
   }]
 });
 assert.equal(
@@ -387,14 +605,15 @@ fakeTransport.emit({
   levelId: COMPACT_TEST_LEVEL.id,
   physicsKind: "rapier",
   peerId: "session-remote",
-  sequence: 4,
-  simulationTick: 21,
-  kind: "ink_hashes",
+    sequence: 4,
+    simulationTick: 21,
+    inkRevision: 21,
+    kind: "ink_hashes",
   hashes: [{
     surfaceId: localRuntimeTile.tile.surfaceId,
     tileX: localRuntimeTile.tile.tileX,
     tileY: localRuntimeTile.tile.tileY,
-    hash: localRuntimeTile.tile.hash ^ 1
+    hash: (localRuntimeTile.tile.hash ^ 1) >>> 0
   }]
 });
 const requestPacket = [...fakeTransport.sent].reverse().find(

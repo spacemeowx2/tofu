@@ -2,6 +2,10 @@ import type { PaintStamp, PaintSurfaceId, TeamId, WallSurfaceId } from "@tofu/pr
 import { createLevelWallSurfaces, type LevelDefinition, type WallSurface } from "./level.js";
 
 const NEUTRAL = 255;
+export const DEFAULT_INK_RESOLUTION = 256;
+export const DEFAULT_INK_TILE_SIZE = 8;
+export const WALL_INK_CELLS_PER_UNIT = 12;
+export const MAX_INK_REVISION = 0xffff_ffff;
 
 type SurfaceGrid = {
   surfaceId: PaintSurfaceId;
@@ -48,14 +52,13 @@ export class TiledInkField {
 
   constructor(
     private readonly level: LevelDefinition,
-    readonly resolution = 128,
-    readonly tileSize = 16,
-    wallCellsPerUnit = 12
+    readonly resolution = DEFAULT_INK_RESOLUTION,
+    readonly tileSize = DEFAULT_INK_TILE_SIZE,
+    wallCellsPerUnit = WALL_INK_CELLS_PER_UNIT
   ) {
     this.ground = createGrid("ground", resolution, resolution);
     for (const surface of createLevelWallSurfaces(level)) {
-      const width = Math.max(1, Math.ceil((surface.maxAlong - surface.minAlong) * wallCellsPerUnit));
-      const height = Math.max(1, Math.ceil(surface.height * wallCellsPerUnit));
+      const { width, height } = wallInkGridSize(surface, wallCellsPerUnit);
       this.walls.set(surface.id, { surface, grid: createGrid(surface.id, width, height) });
     }
   }
@@ -75,6 +78,7 @@ export class TiledInkField {
   }
 
   paint(stamp: PaintStamp, tick = 0) {
+    if (!Number.isSafeInteger(tick) || tick < 0 || tick > MAX_INK_REVISION) return [];
     const writer = hashWriter(stamp.id);
     if (stamp.surfaceId === "ground") {
       return this.snapshotsForKeys(
@@ -105,9 +109,25 @@ export class TiledInkField {
     return hashes;
   }
 
+  tileHash(surfaceId: PaintSurfaceId, tileX: number, tileY: number) {
+    const grid = this.grid(surfaceId);
+    if (
+      !grid ||
+      !Number.isInteger(tileX) ||
+      !Number.isInteger(tileY) ||
+      tileX < 0 ||
+      tileY < 0 ||
+      tileX * this.tileSize >= grid.width ||
+      tileY * this.tileSize >= grid.height
+    ) return undefined;
+    return hashTile(grid, tileX, tileY, this.tileSize);
+  }
+
   snapshotTile(surfaceId: PaintSurfaceId, tileX: number, tileY: number): InkTileSnapshot | undefined {
     const grid = this.grid(surfaceId);
-    if (!grid) return undefined;
+    if (!grid || !Number.isInteger(tileX) || !Number.isInteger(tileY) || tileX < 0 || tileY < 0) {
+      return undefined;
+    }
     const startX = tileX * this.tileSize;
     const startY = tileY * this.tileSize;
     if (startX >= grid.width || startY >= grid.height) return undefined;
@@ -170,7 +190,7 @@ export class TiledInkField {
       snapshot.ticks.length !== snapshot.owners.length ||
       snapshot.writers.length !== snapshot.owners.length ||
       snapshot.owners.some((owner) => owner !== 0 && owner !== 1 && owner !== NEUTRAL) ||
-      snapshot.ticks.some((tick) => !Number.isSafeInteger(tick) || tick < 0) ||
+      snapshot.ticks.some((tick) => !Number.isSafeInteger(tick) || tick < 0 || tick > MAX_INK_REVISION) ||
       snapshot.writers.some((writer) => !Number.isSafeInteger(writer) || writer < 0 || writer > 0xffff_ffff) ||
       snapshot.hash !== hashArrays(snapshot.owners, snapshot.ticks, snapshot.writers)
     ) return false;
@@ -309,6 +329,16 @@ export class TiledInkField {
     }
     return snapshots;
   }
+}
+
+export function wallInkGridSize(
+  surface: Pick<WallSurface, "minAlong" | "maxAlong" | "height">,
+  cellsPerUnit = WALL_INK_CELLS_PER_UNIT
+) {
+  return {
+    width: Math.max(1, Math.ceil((surface.maxAlong - surface.minAlong) * cellsPerUnit)),
+    height: Math.max(1, Math.ceil(surface.height * cellsPerUnit))
+  };
 }
 
 function createGrid(surfaceId: PaintSurfaceId, width: number, height: number): SurfaceGrid {

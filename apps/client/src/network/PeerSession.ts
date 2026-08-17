@@ -4,7 +4,14 @@ import type { GameTransport, PeerInfo, TransportSession } from "../transport";
 type WithoutPacketHeader<T> = T extends unknown
   ? Omit<
       T,
-      "protocolVersion" | "contentId" | "levelId" | "physicsKind" | "peerId" | "sequence" | "simulationTick"
+      | "protocolVersion"
+      | "contentId"
+      | "levelId"
+      | "physicsKind"
+      | "peerId"
+      | "sequence"
+      | "simulationTick"
+      | "inkRevision"
     >
   : never;
 export type OutgoingPeerPacket = WithoutPacketHeader<PeerPacket>;
@@ -13,6 +20,7 @@ export class PeerSession {
   private sequence = 0;
   private peerId = "";
   private simulationTick = 0;
+  private inkRevision = 0;
 
   constructor(
     private readonly transport: GameTransport,
@@ -39,6 +47,10 @@ export class PeerSession {
     this.simulationTick = tick;
   }
 
+  setInkRevision(revision: number) {
+    this.inkRevision = revision;
+  }
+
   send(payload: OutgoingPeerPacket) {
     if (!this.peerId) return;
     this.transport.send({
@@ -47,7 +59,8 @@ export class PeerSession {
       ...this.compatibility,
       peerId: this.peerId,
       sequence: ++this.sequence,
-      simulationTick: this.simulationTick
+      simulationTick: this.simulationTick,
+      inkRevision: this.inkRevision
     } as PeerPacket);
   }
 

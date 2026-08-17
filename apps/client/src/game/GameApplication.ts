@@ -80,8 +80,8 @@ export class GameApplication {
       );
       this.controller = controller;
       session.setCallbacks({
-        onLocalDamage: (result, attackerName, damage) =>
-          controller?.handleLocalDamage(result.defeated, attackerName, damage)
+        onLocalDamage: (attackerName, damage) =>
+          controller?.handleLocalDamage(attackerName, damage)
       });
 
       const runtime = new GameRuntime({
@@ -146,7 +146,9 @@ export class GameApplication {
   private resize = () => this.engine.resize();
 
   private dispose = () => {
+    this.engine.stopRenderLoop();
     this.input?.dispose();
+    this.renderer.dispose();
     this.world?.dispose();
     void this.session?.close();
   };

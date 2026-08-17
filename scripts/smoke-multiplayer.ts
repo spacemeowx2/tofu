@@ -65,6 +65,7 @@ try {
     peerId: peerIdA,
     sequence: 1,
     simulationTick: 10,
+    inkRevision: 0,
     player: { ...relayPlayer }
   };
   let received: RelayedPeerPacket | undefined;
@@ -98,40 +99,41 @@ try {
   movementWorld.applyPaint([{
     id: "own-ground",
     team: 0,
+    kind: "impact",
+    originX: swimmer.x,
+    originY: 0,
+    originZ: swimmer.z + 3,
     surfaceId: "ground",
     x: swimmer.x,
     y: 0,
     z: swimmer.z + 3,
-    radiusU: 10,
-    radiusV: 10,
+    radiusU: 4,
+    radiusV: 4,
     rotation: 0
   }]);
+  const batchStartTick = movementWorld.tick;
   for (let tick = 0; tick < 60; tick += 1) {
-    movementWorld.step(walker.id, {
-      moveX: 0,
-      moveZ: 1,
-      jumpPressed: false,
-      diving: false,
-      groundTeam: movementWorld.ink.teamAt(walker.x, walker.z)
-    }, 1 / 60);
-    movementWorld.step(swimmer.id, {
-      moveX: 0,
-      moveZ: 1,
-      jumpPressed: false,
-      diving: true,
-      groundTeam: movementWorld.ink.teamAt(swimmer.x, swimmer.z)
-    }, 1 / 60);
+    movementWorld.step([
+      {
+        playerId: walker.id,
+        input: { moveX: 0, moveZ: 1, jumpPressed: false, diving: false }
+      },
+      {
+        playerId: swimmer.id,
+        input: { moveX: 0, moveZ: 1, jumpPressed: false, diving: true }
+      }
+    ], 1 / 60);
+  }
+  if (movementWorld.tick - batchStartTick !== 60) {
+    throw new Error("multi-authority batch advanced the global tick more than once");
   }
   if (swimmer.z - walker.z < 1) throw new Error("own-color dive speed was not data-owned by GameWorld");
 
   const jumper = movementWorld.createPlayer("jump", "jump", 0, SPLATTERSHOT.id);
-  movementWorld.step(jumper.id, {
-    moveX: 0,
-    moveZ: 0,
-    jumpPressed: true,
-    diving: false,
-    groundTeam: null
-  }, 1 / 60);
+  movementWorld.step([{
+    playerId: jumper.id,
+    input: { moveX: 0, moveZ: 0, jumpPressed: true, diving: false }
+  }], 1 / 60);
   if (jumper.y <= 0 || jumper.vy <= 0) throw new Error("jump was not simulated by GameWorld");
 
   const climber = movementWorld.createPlayer("climber", "climber", 0, SPLATTERSHOT.id);
@@ -139,6 +141,10 @@ try {
   movementWorld.applyPaint([{
     id: "own-wall",
     team: 0,
+    kind: "impact",
+    originX: -5.6,
+    originY: 0.5,
+    originZ: 0,
     surfaceId: "obstacle-0-nx",
     x: -5.6,
     y: 0.5,
@@ -147,24 +153,13 @@ try {
     radiusV: 1.25,
     rotation: 0
   }]);
-  const wallContact = movementWorld.wallContactFor(climber.id);
-  if (!wallContact) throw new Error("Rapier wall contact was not detected");
-  movementWorld.step(climber.id, {
-    moveX: 1,
-    moveZ: 0,
-    jumpPressed: false,
-    diving: true,
-    groundTeam: null,
-    wallContact: {
-      ...wallContact,
-      team: movementWorld.ink.teamAtWall(
-        wallContact.id,
-        wallContact.x,
-        wallContact.y,
-        wallContact.z
-      )
-    }
-  }, 1 / 60);
+  if (!movementWorld.wallContactFor(climber.id)) {
+    throw new Error("Rapier wall contact was not detected");
+  }
+  movementWorld.step([{
+    playerId: climber.id,
+    input: { moveX: 1, moveZ: 0, jumpPressed: false, diving: true }
+  }], 1 / 60);
   if (!climber.wallAttached || climber.y <= 0) {
     throw new Error("Shift did not attach and climb on own-color wall ink");
   }
@@ -215,7 +210,7 @@ try {
   let paintEvents = 0;
   let impactSurface = "";
   for (let tick = 0; tick < 180 && projectileWorld.bullets.has(arc.id); tick += 1) {
-    for (const event of projectileWorld.step(shooter.id, undefined, 1 / 60)) {
+    for (const event of projectileWorld.step([{ playerId: shooter.id }], 1 / 60)) {
       if (event.kind === "paint") {
         paintEvents += 1;
         impactSurface = event.stamps[0]?.surfaceId ?? impactSurface;
@@ -269,7 +264,7 @@ try {
     weaponId: shooter.weaponId
   });
   const hit = projectileWorld
-    .step(shooter.id, undefined, 1 / 600)
+    .step([{ playerId: shooter.id }], 1 / 600)
     .find((event) => event.kind === "hit");
   if (!hit) throw new Error("GameWorld capsule hit detection did not produce a hit event");
 

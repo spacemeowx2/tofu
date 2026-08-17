@@ -1,16 +1,17 @@
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Scene } from "@babylonjs/core/scene";
-import type { BulletSnapshot, PlayerSnapshot, TeamId } from "@tofu/protocol";
+import type { BulletSnapshot, PaintStamp, PlayerSnapshot, TeamId } from "@tofu/protocol";
 import type { InkTileSnapshot } from "@tofu/simulation/ink";
 import type { LevelDefinition, WallSurface } from "@tofu/simulation/level";
 import type { ThirdPersonCamera } from "../camera/ThirdPersonCamera";
+import { InkFluidVfx } from "./InkFluidVfx";
 import { InkTextureRenderer } from "./InkTextureRenderer";
 
 type PlayerMesh = {
@@ -25,6 +26,7 @@ type PlayerMesh = {
 type BulletMesh = {
   mesh: Mesh;
   targetPosition: Vector3;
+  targetDirection: Vector3;
 };
 
 const TEAM_COLORS = [new Color3(0.96, 0.36, 0.12), new Color3(0.08, 0.64, 0.68)] as const;
@@ -32,18 +34,18 @@ const TEAM_COLOR_CSS = ["#f45c1f", "#14a3ad"] as const;
 const NEUTRAL_GROUND_COLOR = "#b9c2ad";
 const NEUTRAL_COVER_COLOR = "#84917f";
 const NEUTRAL_ARENA_WALL_COLOR = "#1f2e24";
-const INK_TEXTURE_SIZE = 512;
 const PLAYER_RENDER_SHARPNESS = 18;
 const PLAYER_ROTATION_SHARPNESS = 20;
 const NETWORK_EXTRAPOLATION_SECONDS = 0.05;
 const BULLET_RENDER_SHARPNESS = 30;
+const INK_SETTLE_SECONDS = 0.18;
 
 export class GameRenderer {
   private readonly playerMeshes = new Map<string, PlayerMesh>();
   private readonly bulletMeshes = new Map<string, BulletMesh>();
-  private readonly wallInkTextures = new Map<string, DynamicTexture>();
+  private readonly bulletMaterials: readonly [StandardMaterial, StandardMaterial];
   private readonly inkRenderer: InkTextureRenderer;
-  private inkTexture!: DynamicTexture;
+  private readonly inkVfx: InkFluidVfx;
 
   constructor(
     private readonly scene: Scene,
@@ -52,21 +54,26 @@ export class GameRenderer {
   ) {
     scene.clearColor = new Color4(0.79, 0.89, 0.82, 1);
     const light = new HemisphericLight("sun", new Vector3(-0.3, 1, -0.2), scene);
-    light.intensity = 1.25;
+    light.intensity = 1.05;
     light.groundColor = new Color3(0.35, 0.45, 0.38);
-    this.createArena();
+    const inkLight = new DirectionalLight("ink-key-light", new Vector3(-0.45, -1, 0.3), scene);
+    inkLight.intensity = 0.7;
+    this.bulletMaterials = [
+      this.makeBulletMaterial("orange", TEAM_COLORS[0]),
+      this.makeBulletMaterial("cyan", TEAM_COLORS[1])
+    ];
     this.inkRenderer = new InkTextureRenderer(
-      this.inkTexture,
-      this.wallInkTextures,
-      INK_TEXTURE_SIZE,
-      TEAM_COLOR_CSS,
+      scene,
       wallSurfaces,
+      TEAM_COLOR_CSS,
       {
         ground: NEUTRAL_GROUND_COLOR,
         obstacle: NEUTRAL_COVER_COLOR,
         arenaWall: NEUTRAL_ARENA_WALL_COLOR
       }
     );
+    this.inkVfx = new InkFluidVfx(scene, wallSurfaces);
+    this.createArena();
   }
 
   syncPlayer(player: Readonly<PlayerSnapshot>, local: boolean) {
@@ -98,9 +105,13 @@ export class GameRenderer {
       this.bulletMeshes.set(bullet.id, view);
     }
     view.targetPosition.set(bullet.x, bullet.y, bullet.z);
+    view.targetDirection.set(bullet.dx, bullet.dy, bullet.dz).normalize();
+    view.mesh.rotationQuaternion = Quaternion.FromLookDirectionLH(view.targetDirection, Vector3.Up());
   }
 
   update(dt: number, localPlayerId: string) {
+    this.inkRenderer.update(dt);
+    this.inkVfx.update(dt);
     const positionBlend = 1 - Math.exp(-PLAYER_RENDER_SHARPNESS * dt);
     const rotationBlend = 1 - Math.exp(-PLAYER_ROTATION_SHARPNESS * dt);
     this.playerMeshes.forEach((view, id) => {
@@ -127,13 +138,23 @@ export class GameRenderer {
     this.inkRenderer.applyTile(snapshot);
   }
 
+  applyPaint(stamps: readonly PaintStamp[], tiles: readonly InkTileSnapshot[]) {
+    this.inkVfx.spawn(stamps);
+    if (stamps.length > 0 && stamps.every(({ kind }) => kind === "impact")) {
+      this.inkRenderer.settleTiles(tiles, INK_SETTLE_SECONDS);
+    } else {
+      this.inkRenderer.applyTiles(tiles);
+    }
+  }
+
   removePlayer(id: string) {
     this.playerMeshes.get(id)?.root.dispose();
     this.playerMeshes.delete(id);
   }
 
   removeBullet(id: string) {
-    this.bulletMeshes.get(id)?.mesh.dispose();
+    const view = this.bulletMeshes.get(id);
+    view?.mesh.dispose();
     this.bulletMeshes.delete(id);
   }
 
@@ -143,23 +164,14 @@ export class GameRenderer {
     }
   }
 
+  dispose() {
+    this.inkVfx.dispose();
+  }
+
   private createArena() {
-    const floorSize = this.level.halfSize * 2 + 3;
+    const floorSize = this.level.halfSize * 2;
     const floor = MeshBuilder.CreateGround("paintable-floor", { width: floorSize, height: floorSize }, this.scene);
-    const floorMaterial = new StandardMaterial("paintable-floor-material", this.scene);
-    this.inkTexture = new DynamicTexture(
-      "ink-ownership-texture",
-      { width: INK_TEXTURE_SIZE, height: INK_TEXTURE_SIZE },
-      this.scene,
-      false
-    );
-    const inkContext = this.inkTexture.getContext();
-    inkContext.fillStyle = NEUTRAL_GROUND_COLOR;
-    inkContext.fillRect(0, 0, INK_TEXTURE_SIZE, INK_TEXTURE_SIZE);
-    this.inkTexture.update(true);
-    floorMaterial.diffuseTexture = this.inkTexture;
-    floorMaterial.specularColor = new Color3(0.08, 0.08, 0.07);
-    floor.material = floorMaterial;
+    floor.material = this.inkRenderer.groundMaterial();
 
     const wallMaterial = this.makeMaterial("wall-material", new Color3(0.12, 0.18, 0.14));
     const size = this.level.halfSize * 2 + 1;
@@ -205,22 +217,7 @@ export class GameRenderer {
       plane.position.set(alongCenter, surface.height / 2, surface.coordinate + surface.normalZ * 0.012);
       plane.rotation.y = surface.normalZ < 0 ? 0 : Math.PI;
     }
-    const texture = new DynamicTexture(
-      `wall-ink-${surface.id}`,
-      { width: INK_TEXTURE_SIZE, height: INK_TEXTURE_SIZE },
-      this.scene,
-      false
-    );
-    const context = texture.getContext();
-    context.fillStyle = surface.id.startsWith("obstacle-") ? NEUTRAL_COVER_COLOR : NEUTRAL_ARENA_WALL_COLOR;
-    context.fillRect(0, 0, INK_TEXTURE_SIZE, INK_TEXTURE_SIZE);
-    texture.update(true);
-    const material = new StandardMaterial(`wall-ink-material-${surface.id}`, this.scene);
-    material.diffuseTexture = texture;
-    material.backFaceCulling = true;
-    material.specularColor = new Color3(0.06, 0.07, 0.06);
-    plane.material = material;
-    this.wallInkTextures.set(surface.id, texture);
+    plane.material = this.inkRenderer.wallMaterial(surface.id) ?? null;
   }
 
   private createTofu(id: string, team: TeamId): PlayerMesh {
@@ -289,17 +286,28 @@ export class GameRenderer {
   }
 
   private createBullet(id: string, team: TeamId): BulletMesh {
-    const bullet = MeshBuilder.CreateSphere(`soy-bullet-${id}`, { diameter: 0.26, segments: 10 }, this.scene);
-    const material = this.makeMaterial(`bullet-material-${id}`, TEAM_COLORS[team]);
-    material.emissiveColor = material.diffuseColor.scale(0.55);
-    bullet.material = material;
-    return { mesh: bullet, targetPosition: Vector3.Zero() };
+    const bullet = MeshBuilder.CreateSphere(`soy-bullet-${id}`, { diameter: 0.28, segments: 12 }, this.scene);
+    bullet.material = this.bulletMaterials[team];
+    bullet.scaling.set(0.86, 0.86, 1.7);
+    return {
+      mesh: bullet,
+      targetPosition: Vector3.Zero(),
+      targetDirection: Vector3.Forward()
+    };
   }
 
   private makeMaterial(name: string, color: Color3) {
     const material = new StandardMaterial(name, this.scene);
     material.diffuseColor = color;
     material.specularColor = new Color3(0.08, 0.08, 0.07);
+    return material;
+  }
+
+  private makeBulletMaterial(name: string, color: Color3) {
+    const material = this.makeMaterial(`bullet-material-${name}`, color);
+    material.emissiveColor = color.scale(0.28);
+    material.specularColor = new Color3(0.95, 0.95, 0.95);
+    material.specularPower = 96;
     return material;
   }
 }

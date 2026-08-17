@@ -20,11 +20,19 @@ export type PlayerInput = {
   moveZ: number;
   jumpPressed: boolean;
   diving: boolean;
+  fire?: {
+    direction: { x: number; y: number; z: number };
+    forward: { x: number; z: number };
+    right: { x: number; z: number };
+  };
+};
+
+export type ResolvedPlayerInput = PlayerInput & {
   groundTeam: TeamId | null;
   wallContact?: WallContact & { team: TeamId | null };
 };
 
-export type PaintSplatKind = "trail" | "impact" | "foot";
+export type PaintSplatKind = PaintStamp["kind"];
 
 type PaintSplatInput = {
   id: string;
@@ -72,7 +80,7 @@ export function createPlayerState(
 
 export function stepPlayerState(
   player: PlayerSnapshot,
-  input: PlayerInput,
+  input: ResolvedPlayerInput,
   dt: number,
   physics: PhysicsAdapter
 ) {
@@ -265,10 +273,44 @@ export function createPaintStamps(
     const offsetU = forward * cos - lateral * sin;
     const offsetV = forward * sin + lateral * cos;
     const radiusScale = isMain ? 1 : interpolate(definition.radiusScaleRange, random01(markSeed ^ 0x85ebca6b));
+    let radiusU = definition.mainRadius[0] * radiusScale;
+    const radiusV = definition.mainRadius[1] * radiusScale *
+      (isMain ? 1 : 0.88 + random01(markSeed ^ 0xc2b2ae35) * 0.34);
+    let directionalCenterOffset = 0;
+    if (
+      isMain &&
+      input.surfaceId === "ground" &&
+      definition.floorForwardStretch
+    ) {
+      const horizontalSpeed = Math.hypot(input.directionX, input.directionZ);
+      const impactAngleDegrees = Math.atan2(
+        Math.abs(input.directionY),
+        horizontalSpeed
+      ) * 180 / Math.PI;
+      const angleAmount = clamp01(
+        (impactAngleDegrees - definition.floorForwardStretch.shallowAngleDegrees) /
+        (
+          definition.floorForwardStretch.steepAngleDegrees -
+          definition.floorForwardStretch.shallowAngleDegrees
+        )
+      );
+      const forwardExtent = definition.mainRadius[0] * interpolate(
+        [
+          definition.floorForwardStretch.shallowMultiplier,
+          definition.floorForwardStretch.steepMultiplier
+        ],
+        angleAmount
+      );
+      const rearExtent =
+        definition.mainRadius[0] *
+        definition.floorForwardStretch.rearRadiusMultiplier;
+      radiusU = (forwardExtent + rearExtent) / 2;
+      directionalCenterOffset = (forwardExtent - rearExtent) / 2;
+    }
     let { x, y, z } = input;
     if (input.surfaceId === "ground") {
-      x += offsetU;
-      z += offsetV;
+      x += offsetU + directionalCenterOffset * cos;
+      z += offsetV + directionalCenterOffset * sin;
     } else if (surface!.axis === "x") {
       z += offsetU;
       y += offsetV;
@@ -279,13 +321,17 @@ export function createPaintStamps(
     marks.push({
       id: `${input.id}:${index}`,
       team: input.team,
+      kind: input.kind,
+      originX: input.x,
+      originY: input.y,
+      originZ: input.z,
       surfaceId: input.surfaceId,
       x,
       y,
       z,
-      radiusU: definition.mainRadius[0] * radiusScale,
-      radiusV: definition.mainRadius[1] * radiusScale * (isMain ? 1 : 0.88 + random01(markSeed ^ 0xc2b2ae35) * 0.34),
-      rotation: baseRotation + randomSigned(markSeed ^ 0x9e3779b9) * (isMain ? 0.16 : 0.7)
+      radiusU,
+      radiusV,
+      rotation: baseRotation + (isMain ? 0 : randomSigned(markSeed ^ 0x9e3779b9) * 0.7)
     } as PaintStamp);
   }
   return marks;
@@ -322,6 +368,10 @@ function random01(seed: number) {
 
 function randomSigned(seed: number) {
   return random01(seed) * 2 - 1;
+}
+
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
 }
 
 function normalize3(value: { x: number; y: number; z: number }) {

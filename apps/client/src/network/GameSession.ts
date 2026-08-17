@@ -5,15 +5,15 @@ import {
   type PeerPacket,
   type PlayerSnapshot
 } from "@tofu/protocol";
-import type { InkTileSnapshot } from "@tofu/simulation/ink";
-import type { DamageResult, GameWorld, GameWorldEvent } from "@tofu/simulation/world";
+import { MAX_INK_REVISION, type InkTileSnapshot } from "@tofu/simulation/ink";
+import type { GameWorld, GameWorldEvent } from "@tofu/simulation/world";
 import type { GameRenderer } from "../rendering/GameRenderer";
 import type { GameTransport, PeerInfo, TransportSession } from "../transport";
 import type { HudView } from "../ui/HudView";
 import { PeerSession, type OutgoingPeerPacket } from "./PeerSession";
 
 export type GameSessionCallbacks = {
-  onLocalDamage(result: DamageResult, attackerName: string, damage: number): void;
+  onLocalDamage(attackerName: string, damage: number): void;
 };
 
 export class GameSession {
@@ -78,8 +78,17 @@ export class GameSession {
 
   publishWorldEvent(event: GameWorldEvent) {
     if (event.kind === "paint") {
-      event.tiles.forEach((tile) => this.renderer.applyInkTile(tile));
-      this.send({ kind: "paint", stamps: event.stamps });
+      if (event.tiles.length > 0) this.renderer.applyPaint(event.stamps, event.tiles);
+      this.send({ kind: "paint", paintRevision: event.inkRevision, stamps: event.stamps });
+      return;
+    }
+    if (event.kind === "shot") {
+      this.sendShot(event.bullet);
+      return;
+    }
+    if (event.kind === "respawn") {
+      if (event.ownerId === this.localPeerId) this.hud.addFeed("你已重新凝固");
+      this.broadcastPlayerState();
       return;
     }
     if (event.kind === "hit") {
@@ -95,8 +104,10 @@ export class GameSession {
       );
       return;
     }
-    this.send({ kind: "bullet_removed", bulletId: event.bulletId });
-    this.renderer.removeBullet(event.bulletId);
+    if (event.kind === "bullet_removed") {
+      this.send({ kind: "bullet_removed", bulletId: event.bulletId });
+      this.renderer.removeBullet(event.bulletId);
+    }
   }
 
   broadcastDirtyInkTiles() {
@@ -136,11 +147,21 @@ export class GameSession {
 
   private handlePacket(packet: PeerPacket) {
     if (
+      !packet ||
+      typeof packet !== "object" ||
       packet.protocolVersion !== PROTOCOL_VERSION ||
       packet.contentId !== this.contentId ||
       packet.levelId !== this.world.level.id ||
       packet.physicsKind !== this.world.physicsKind ||
-      packet.peerId === this.localPeerId
+      typeof packet.peerId !== "string" ||
+      packet.peerId === this.localPeerId ||
+      !Number.isSafeInteger(packet.sequence) ||
+      packet.sequence <= 0 ||
+      !Number.isSafeInteger(packet.simulationTick) ||
+      packet.simulationTick < 0 ||
+      !Number.isSafeInteger(packet.inkRevision) ||
+      packet.inkRevision < 0 ||
+      packet.inkRevision > MAX_INK_REVISION
     ) return;
     if (packet.kind === "player_state") {
       if (
@@ -172,27 +193,55 @@ export class GameSession {
     }
     if (packet.kind === "paint") {
       if (
+        !Array.isArray(packet.stamps) ||
         packet.stamps.length > 16 ||
-        packet.stamps.some((stamp) => this.roster.get(packet.peerId)?.team !== stamp.team)
+        !Number.isSafeInteger(packet.paintRevision) ||
+        packet.paintRevision <= 0 ||
+        packet.paintRevision > packet.inkRevision ||
+        packet.stamps.some((stamp) =>
+          !this.world.isValidPaintStamp(stamp) ||
+          this.roster.get(packet.peerId)?.team !== stamp.team
+        )
       ) return;
-      const tiles = this.world.applyPaint(packet.stamps, packet.simulationTick);
-      tiles.forEach((tile) => this.renderer.applyInkTile(tile));
+      const tiles = this.world.applyPaint(packet.stamps, packet.paintRevision);
+      if (tiles.length > 0) this.renderer.applyPaint(packet.stamps, tiles);
       return;
     }
     if (packet.kind === "ink_hashes") {
+      if (!Array.isArray(packet.hashes)) return;
       this.requestDifferingTiles(packet.peerId, packet.hashes);
       return;
     }
     if (packet.kind === "ink_tile_request") {
-      if (packet.targetPeerId !== this.localPeerId || packet.tiles.length > 24) return;
-      for (const key of packet.tiles) {
-        const tile = this.world.inkTile(key.surfaceId, key.tileX, key.tileY);
-        if (tile) this.send({ kind: "ink_tile", targetPeerId: packet.peerId, tile });
+      if (
+        packet.targetPeerId !== this.localPeerId ||
+        !Array.isArray(packet.tiles) ||
+        packet.tiles.length > 24
+      ) return;
+      const requestedTiles: InkTileSnapshot[] = [];
+      for (const key of packet.tiles as unknown[]) {
+        if (
+          !isRecord(key) ||
+          typeof key.surfaceId !== "string" ||
+          !Number.isSafeInteger(key.tileX) ||
+          !Number.isSafeInteger(key.tileY)
+        ) return;
+        const tile = this.world.inkTile(
+          key.surfaceId as InkTileSnapshot["surfaceId"],
+          key.tileX as number,
+          key.tileY as number
+        );
+        if (!tile) return;
+        requestedTiles.push(tile);
+      }
+      for (const tile of requestedTiles) {
+        this.send({ kind: "ink_tile", targetPeerId: packet.peerId, tile });
       }
       return;
     }
     if (packet.kind === "ink_tile") {
       if (packet.targetPeerId && packet.targetPeerId !== this.localPeerId) return;
+      if (!isRecord(packet.tile)) return;
       const tile = packet.tile as InkTileSnapshot;
       if (
         !Array.isArray(tile.owners) ||
@@ -224,7 +273,7 @@ export class GameSession {
       this.world.removeBullet(packet.bulletId);
       this.renderer.removeBullet(packet.bulletId);
       this.renderer.syncPlayer(result.player, true);
-      this.callbacks?.onLocalDamage(result, attacker.name, packet.damage);
+      this.callbacks?.onLocalDamage(attacker.name, packet.damage);
       this.broadcastPlayerState();
       this.renderHud();
     }
@@ -232,17 +281,23 @@ export class GameSession {
 
   private requestDifferingTiles(peerId: string, hashes: readonly InkTileHashDto[]) {
     if (hashes.length > 24) return;
-    const tiles = this.world.differingInkTiles(hashes).slice(0, 24);
+    const tiles = this.world.differingInkTiles(hashes)?.slice(0, 24);
+    if (!tiles) return;
     if (tiles.length > 0) this.send({ kind: "ink_tile_request", targetPeerId: peerId, tiles });
   }
 
   private send(payload: OutgoingPeerPacket) {
     if (!this.localPeerId) return;
     this.peer.setSimulationTick(this.world.tick);
+    this.peer.setInkRevision(this.world.inkRevision);
     this.peer.send(payload);
   }
 
   private renderHud() {
     this.hud.renderPlayers(this.world.players.values(), this.localPeerId);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

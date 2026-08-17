@@ -1,5 +1,5 @@
 export const ROOM_NAME = "tofu_arena";
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 6;
 export const PLAYER_MAX_HP = 100;
 export const PLAYER_RADIUS = 0.45;
 export const PLAYER_COLLIDER_HEIGHT = 1.3;
@@ -59,6 +59,7 @@ type PacketHeader = {
   peerId: string;
   sequence: number;
   simulationTick: number;
+  inkRevision: number;
 };
 
 export type PlayerStatePacket = PacketHeader & {
@@ -87,6 +88,10 @@ export type BulletRemovedPacket = PacketHeader & {
 type PaintStampBase = {
   id: string;
   team: TeamId;
+  kind: "impact" | "trail" | "foot";
+  originX: number;
+  originY: number;
+  originZ: number;
   x: number;
   y: number;
   z: number;
@@ -101,6 +106,7 @@ export type PaintStamp = GroundPaintStamp | WallPaintStamp;
 
 export type PaintPacket = PacketHeader & {
   kind: "paint";
+  paintRevision: number;
   stamps: PaintStamp[];
 };
 

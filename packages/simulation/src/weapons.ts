@@ -32,6 +32,13 @@ export type WeaponDefinition = {
       readonly forwardRange: readonly [number, number];
       readonly lateralRange: readonly [number, number];
       readonly radiusScaleRange: readonly [number, number];
+      readonly floorForwardStretch?: {
+        readonly shallowMultiplier: number;
+        readonly steepMultiplier: number;
+        readonly shallowAngleDegrees: number;
+        readonly steepAngleDegrees: number;
+        readonly rearRadiusMultiplier: number;
+      };
     }>>;
   };
 };
@@ -67,26 +74,35 @@ export const SPLATTERSHOT: WeaponDefinition = {
       [0.85, 4.15],
       [2.25, 5.15],
       [1.1],
-      [1.8, 4.55]
+      [1.8, 4.55],
+      [0.62, 3.72],
+      [1.24, 4.82]
     ],
     splats: {
       impact: {
-        mainRadius: [0.68, 0.46],
-        satelliteCount: 5,
+        mainRadius: [0.36, 0.36],
+        satelliteCount: 0,
         forwardRange: [0.32, 1.04],
         lateralRange: [0.16, 0.58],
-        radiusScaleRange: [0.2, 0.52]
+        radiusScaleRange: [0.2, 0.52],
+        floorForwardStretch: {
+          shallowMultiplier: 2.24,
+          steepMultiplier: 1.31,
+          shallowAngleDegrees: 10,
+          steepAngleDegrees: 35,
+          rearRadiusMultiplier: 0.55
+        }
       },
       trail: {
-        mainRadius: [0.3, 0.24],
-        satelliteCount: 2,
+        mainRadius: [0.28, 0.23],
+        satelliteCount: 0,
         forwardRange: [0.32, 0.66],
         lateralRange: [0.16, 0.58],
         radiusScaleRange: [0.2, 0.52]
       },
       foot: {
-        mainRadius: [0.46, 0.38],
-        satelliteCount: 2,
+        mainRadius: [0.3, 0.3],
+        satelliteCount: 0,
         forwardRange: [0.16, 0.38],
         lateralRange: [0.08, 0.28],
         radiusScaleRange: [0.18, 0.42]
