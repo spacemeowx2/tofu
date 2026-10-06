@@ -3,20 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tofu Arena</title>
+    <title>TOFU YARD — 涂地试射场</title>
   </head>
   <body>
     <canvas id="game" tabindex="0" aria-label="豆腐竞技场游戏画面"></canvas>
     <div id="hud">
       <div class="brand">
-        <span class="brand-mark">豆</span>
-        <div><strong>TOFU ARENA</strong><small>multiplayer hello world</small></div>
+        <span class="brand-mark">T</span>
+        <div><strong>TOFU YARD</strong><small>ROOFTOP / 01</small></div>
       </div>
-      <div id="status" class="status">正在连接豆腐服务器…</div>
+      <div id="status" class="status">正在进入屋顶试射场…</div>
+      <div class="turf"><div class="turf-label"><span id="turf-orange">0.0%</span><small>TURF COVERAGE</small><span id="turf-cyan">0.0%</span></div><div class="turf-track"><i id="turf-fill-orange"></i><i id="turf-fill-cyan"></i></div></div>
       <div id="players" class="players"></div>
       <div id="controls" class="controls">正在检测鼠标控制模式…</div>
       <div id="feed" class="feed"></div>
-      <div id="crosshair"></div>
+      <div id="crosshair"><i></i></div>
+      <div id="hit-feedback"></div>
+      <div class="weapon-card"><div><small>MAIN WEAPON / 01</small><strong>斯普拉射击枪</strong><span>36 DMG <em>×</em> 10 SHOTS / SEC</span><div class="health">HP <b id="health">100</b></div></div><div class="ink-gauge"><div class="ink-track"><i id="ink-fill"></i></div><b id="ink-value">100%</b><small>INK</small></div></div>
+      <div id="mode" class="mode">斯普拉射击枪</div>
+      <div class="damage-vignette"></div>
+      <section id="welcome" class="welcome" aria-label="进入试射场">
+        <small>WELCOME TO THE ROOFTOP</small><h1>涂出你的<br /><span>下一条路。</span></h1>
+        <p>射击、涂地、潜游。<br />试试墨水的手感，或与朋友在同一张地图相遇。</p>
+        <button id="start" disabled>正在载入…</button>
+        <div class="welcome-keys"><span><b>W A S D</b> 移动</span><span><b>鼠标</b> 瞄准 / 连射</span><span><b>SHIFT</b> 潜游 / 补墨</span><span><b>SPACE</b> 跳跃</span></div>
+        <footer>向靶子试射三发，然后给墙面涂色，潜上平台。<br />按 ESC 释放鼠标。</footer>
+      </section>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

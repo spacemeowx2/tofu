@@ -12,7 +12,8 @@ export class InputController {
   private dragButton = -1;
   private lastMouseX = 0;
   private lastMouseY = 0;
-  private pointerLockAttempt = 0;
+  private firstLockedMove = false;
+  private readonly startButton = document.querySelector<HTMLButtonElement>("#start");
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -27,6 +28,7 @@ export class InputController {
     window.addEventListener("mouseup", this.onMouseUp);
     canvas.addEventListener("mousedown", this.onMouseDown);
     canvas.addEventListener("click", this.onClick);
+    this.startButton?.addEventListener("click", this.onClick);
     canvas.addEventListener("contextmenu", this.onContextMenu);
     document.addEventListener("pointerlockchange", this.onPointerLockChange);
     document.addEventListener("pointerlockerror", this.onPointerLockError);
@@ -34,6 +36,7 @@ export class InputController {
   }
 
   movementAxes() {
+    if (!this.active()) return { strafe: 0, advance: 0 };
     return {
       strafe: Number(this.keys.has("KeyD") || this.keys.has("ArrowRight")) -
         Number(this.keys.has("KeyA") || this.keys.has("ArrowLeft")),
@@ -49,8 +52,10 @@ export class InputController {
   }
 
   isDiving() {
-    return this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    return this.active() && (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"));
   }
+
+  private active() { return document.pointerLockElement === this.canvas || this.softLookActive || this.draggingView; }
 
   dispose() {
     window.removeEventListener("keydown", this.onKeyDown);
@@ -60,6 +65,7 @@ export class InputController {
     window.removeEventListener("mouseup", this.onMouseUp);
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     this.canvas.removeEventListener("click", this.onClick);
+    this.startButton?.removeEventListener("click", this.onClick);
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
     document.removeEventListener("pointerlockchange", this.onPointerLockChange);
     document.removeEventListener("pointerlockerror", this.onPointerLockError);
@@ -72,6 +78,7 @@ export class InputController {
       this.callbacks.onFireChanged(false);
       this.updateControlHint();
     }
+    if (!this.active()) return;
     this.keys.add(event.code);
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(event.code)) event.preventDefault();
     if (event.code === "Space" && !event.repeat) this.jumpQueued = true;
@@ -83,6 +90,7 @@ export class InputController {
 
   private onBlur = () => {
     this.keys.clear();
+    this.jumpQueued = false;
     this.softLookActive = false;
     this.draggingView = false;
     this.callbacks.onFireChanged(false);
@@ -94,6 +102,10 @@ export class InputController {
     if (!pointerLocked && !this.softLookActive && !this.draggingView) return;
     const deltaX = pointerLocked ? event.movementX : event.clientX - this.lastMouseX;
     const deltaY = pointerLocked ? event.movementY : event.clientY - this.lastMouseY;
+    if (pointerLocked && this.firstLockedMove) {
+      this.firstLockedMove = false;
+      if (Math.abs(deltaX) + Math.abs(deltaY) > 250) return;
+    }
     this.lastMouseX = event.clientX;
     this.lastMouseY = event.clientY;
     this.callbacks.onLook(deltaX, deltaY);
@@ -119,7 +131,7 @@ export class InputController {
     this.canvas.focus();
     this.lastMouseX = event.clientX;
     this.lastMouseY = event.clientY;
-    if (this.dragLookMode) {
+    if (typeof this.canvas.requestPointerLock !== "function") {
       if (!this.softLookActive) {
         this.softLookActive = true;
         this.updateControlHint();
@@ -127,14 +139,8 @@ export class InputController {
       return;
     }
     if (document.pointerLockElement === this.canvas) return;
-    const attempt = ++this.pointerLockAttempt;
     const lockRequest = this.canvas.requestPointerLock?.();
     if (lockRequest) void lockRequest.catch((error) => this.enableDragLookFallback(error));
-    window.setTimeout(() => {
-      if (attempt === this.pointerLockAttempt && document.pointerLockElement !== this.canvas) {
-        this.enableDragLookFallback("timeout");
-      }
-    }, 300);
   };
 
   private onMouseUp = (event: MouseEvent) => {
@@ -152,7 +158,10 @@ export class InputController {
       this.dragLookMode = false;
       this.softLookActive = false;
       this.draggingView = false;
+      this.firstLockedMove = true;
     } else {
+      this.keys.clear();
+      this.jumpQueued = false;
       this.callbacks.onFireChanged(false);
     }
     this.updateControlHint();
@@ -161,7 +170,7 @@ export class InputController {
   private onPointerLockError = (event: Event) => this.enableDragLookFallback(event);
 
   private enableDragLookFallback(reason?: unknown) {
-    void reason;
+    console.warn("Pointer Lock unavailable", reason);
     this.dragLookMode = true;
     this.softLookActive = true;
     this.draggingView = false;
@@ -174,7 +183,7 @@ export class InputController {
     document.body.classList.toggle("drag-look", this.dragLookMode);
     document.body.classList.toggle("soft-look", this.softLookActive);
     document.body.classList.toggle("dragging-view", this.draggingView);
-    document.body.classList.toggle("aim-active", pointerLocked || this.softLookActive || this.dragLookMode);
+    document.body.classList.toggle("aim-active", pointerLocked || this.softLookActive || this.draggingView);
     if (this.dragLookMode) {
       this.controls.innerHTML = this.softLookActive
         ? "<b>移动鼠标</b> 转动视角 · <b>按住左键</b> 连射<br /><b>空格</b> 跳跃 · <b>Shift</b> 潜水 · <b>右键拖动</b> 备用视角"

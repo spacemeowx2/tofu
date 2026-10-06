@@ -178,7 +178,7 @@ const authoritativeInk = new TiledInkField(TOFU_TEST_LEVEL);
 authoritativeInk.paint({ ...cyanStamp, id: "newer-local" }, 10);
 const authoritativeTile = authoritativeInk.takeDirtyTileSnapshots()[0];
 const staleInk = new TiledInkField(TOFU_TEST_LEVEL);
-staleInk.paint({ ...orangeStamp, id: "older-remote" }, 9);
+staleInk.paint({ ...orangeStamp, id: "newer-local" }, 9);
 const staleTile = staleInk.takeDirtyTileSnapshots().find(
   (tile) =>
     tile.surfaceId === authoritativeTile.surfaceId &&
@@ -302,10 +302,10 @@ const continuedShots: string[] = [];
 const restoredShots: string[] = [];
 for (let tick = 0; tick < 6; tick += 1) {
   world.step([{ playerId: player.id, input }], 1 / 60).forEach((event) => {
-    if (event.kind === "shot") continuedShots.push(event.bullet.id);
+    if (event.kind === "shot" && event.bullet.kind === "shot") continuedShots.push(event.bullet.id);
   });
   restored.step([{ playerId: player.id, input }], 1 / 60).forEach((event) => {
-    if (event.kind === "shot") restoredShots.push(event.bullet.id);
+    if (event.kind === "shot" && event.bullet.kind === "shot") restoredShots.push(event.bullet.id);
   });
 }
 assert.deepEqual(restoredShots, continuedShots);
@@ -524,7 +524,7 @@ const localRuntimeTile = runtimeTilePackets.find((packet) =>
   packet.tile.owners.includes(0)
 )!;
 const remoteStaleInk = new TiledInkField(COMPACT_TEST_LEVEL);
-remoteStaleInk.paint({ ...sessionStamp, id: "session-remote:older", team: 1 }, 19);
+remoteStaleInk.paint({ ...sessionStamp, team: 1 }, 19);
 const remoteStaleTile = remoteStaleInk.snapshotTile(
   localRuntimeTile.tile.surfaceId,
   localRuntimeTile.tile.tileX,
@@ -565,7 +565,7 @@ fakeTransport.emit({
     inkRevision: 19,
     kind: "paint",
     paintRevision: 19,
-  stamps: [{ ...sessionStamp, id: "session-remote:losing-stamp", team: 1 }]
+  stamps: [{ ...sessionStamp, team: 1 }]
 });
 assert.equal(
   renderedTiles.length,

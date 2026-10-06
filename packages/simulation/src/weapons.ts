@@ -5,6 +5,7 @@ export type WeaponDefinition = {
   readonly displayName: string;
   readonly fireIntervalSeconds: number;
   readonly damage: number;
+  readonly inkCost: number;
   readonly projectile: {
     readonly speed: number;
     readonly radius: number;
@@ -48,6 +49,7 @@ export const SPLATTERSHOT: WeaponDefinition = {
   displayName: "小绿 / 斯普拉射击枪",
   fireIntervalSeconds: 0.1,
   damage: 36,
+  inkCost: 0.92,
   projectile: {
     speed: 15.5,
     radius: 0.2,

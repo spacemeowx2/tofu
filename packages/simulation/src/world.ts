@@ -16,7 +16,7 @@ import {
   type InkTileHash,
   type InkTileSnapshot
 } from "./ink.js";
-import { createLevelWallSurfaces, type LevelDefinition, type WallSurface } from "./level.js";
+import { createLevelFloorSurfaces, createLevelWallSurfaces, type LevelDefinition, type WallSurface } from "./level.js";
 import type { PhysicsAdapter } from "./physics.js";
 import {
   bulletHitsPlayer,
@@ -38,10 +38,15 @@ export type PlayerRuntimeSnapshot = {
   firing: boolean;
   fireCooldown: number;
   respawnRemaining: number;
+  inkRecoveryDelay: number;
+  damageRecoveryDelay: number;
 };
 
+export type TargetSnapshot = { id: string; x: number; y: number; z: number; hp: number; respawnRemaining: number };
+export type InkFlowSnapshot = { ownerId: string; stamp: PaintStamp; elapsed: number; nextStep: number };
+
 export type GameWorldSnapshot = {
-  version: 4;
+  version: 5;
   tick: number;
   inkRevision: number;
   levelId: string;
@@ -50,12 +55,15 @@ export type GameWorldSnapshot = {
   playerRuntime: PlayerRuntimeSnapshot[];
   bullets: BulletSnapshot[];
   ink: InkFieldSnapshot;
+  targets: TargetSnapshot[];
+  inkFlows: InkFlowSnapshot[];
 };
 
 export type GameWorldEvent =
   | { kind: "paint"; ownerId: string; inkRevision: number; stamps: PaintStamp[]; tiles: InkTileSnapshot[] }
   | { kind: "shot"; ownerId: string; bullet: BulletSnapshot }
   | { kind: "respawn"; ownerId: string }
+  | { kind: "target_hit"; ownerId: string; targetId: string; damage: number; hp: number }
   | { kind: "bullet_removed"; ownerId: string; bulletId: string }
   | { kind: "hit"; ownerId: string; bulletId: string; weaponId: WeaponId; targetId: string; damage: number };
 
@@ -80,6 +88,8 @@ export class GameWorld {
   private readonly playerStates = new Map<string, PlayerSnapshot>();
   private readonly playerRuntime = new Map<string, PlayerRuntimeSnapshot>();
   private readonly bulletStates = new Map<string, BulletSnapshot>();
+  private readonly targetStates = new Map<string, TargetSnapshot>();
+  private readonly inkFlows: InkFlowSnapshot[] = [];
   private readonly inkField: TiledInkField;
   private readonly wallSurfaces: readonly WallSurface[];
   private currentTick = 0;
@@ -94,6 +104,7 @@ export class GameWorld {
   ) {
     this.inkField = new TiledInkField(level, inkResolution, inkTileSize);
     this.wallSurfaces = createLevelWallSurfaces(level);
+    for (const target of level.targets ?? []) this.targetStates.set(target.id, { ...target, hp: PLAYER_MAX_HP, respawnRemaining: 0 });
   }
 
   get players(): ReadonlyMap<string, Readonly<PlayerSnapshot>> {
@@ -102,6 +113,14 @@ export class GameWorld {
 
   get bullets(): ReadonlyMap<string, Readonly<BulletSnapshot>> {
     return this.bulletStates;
+  }
+
+  get targets(): ReadonlyMap<string, Readonly<TargetSnapshot>> {
+    return this.targetStates;
+  }
+
+  turfCoverage() {
+    return this.inkField.coverage();
   }
 
   get physicsKind() {
@@ -160,8 +179,8 @@ export class GameWorld {
       stamp.id.length > 0 &&
       stamp.id.length <= 160 &&
       (stamp.team === 0 || stamp.team === 1) &&
-      (stamp.kind === "impact" || stamp.kind === "trail" || stamp.kind === "foot") &&
-      (stamp.surfaceId === "ground" || this.wallSurfaces.some(({ id }) => id === stamp.surfaceId)) &&
+      (stamp.kind === "impact" || stamp.kind === "flow" || stamp.kind === "trail" || stamp.kind === "foot") &&
+      (createLevelFloorSurfaces(this.level).some(({ id }) => id === stamp.surfaceId) || this.wallSurfaces.some(({ id }) => id === stamp.surfaceId)) &&
       stamp.radiusU > 0 && stamp.radiusU <= margin &&
       stamp.radiusV > 0 && stamp.radiusV <= margin &&
       Math.abs(stamp.rotation) <= Math.PI * 4 &&
@@ -190,12 +209,15 @@ export class GameWorld {
       bulletSequence: 0,
       firing: false,
       fireCooldown: 0,
-      respawnRemaining: 0
+      respawnRemaining: 0,
+      inkRecoveryDelay: 0,
+      damageRecoveryDelay: 0
     });
     return player;
   }
 
   upsertPlayer(snapshot: PlayerSnapshot): Readonly<PlayerSnapshot> {
+    if (!this.isValidPlayerSnapshot(snapshot)) throw new Error("Invalid player snapshot");
     this.weapons.get(snapshot.weaponId);
     const existing = this.playerStates.get(snapshot.id);
     if (existing) Object.assign(existing, snapshot);
@@ -207,11 +229,13 @@ export class GameWorld {
   }
 
   removePlayer(id: string) {
+    this.physics.removePlayer(id);
     this.playerRuntime.delete(id);
     return this.playerStates.delete(id);
   }
 
   addBullet(snapshot: BulletSnapshot) {
+    if (!this.isValidBulletSnapshot(snapshot)) return false;
     this.weapons.get(snapshot.weaponId);
     const owner = this.playerStates.get(snapshot.ownerId);
     if (
@@ -221,6 +245,30 @@ export class GameWorld {
     ) return false;
     this.bulletStates.set(snapshot.id, { ...snapshot });
     return true;
+  }
+
+  isValidPlayerSnapshot(value: unknown): value is PlayerSnapshot {
+    if (!isRecord(value)) return false;
+    return typeof value.id === "string" && typeof value.name === "string" && typeof value.weaponId === "string" && this.hasWeapon(value.weaponId)
+      && (value.team === 0 || value.team === 1)
+      && ["x", "y", "z", "vx", "vy", "vz", "facingX", "facingZ", "hp", "ink", "aimPitch"].every((key) => typeof value[key] === "number" && Number.isFinite(value[key]))
+      && ["alive", "diving", "wallAttached", "grounded"].every((key) => typeof value[key] === "boolean")
+      && typeof value.wallSurfaceId === "string"
+      && (value.hp as number) >= 0 && (value.hp as number) <= PLAYER_MAX_HP
+      && (value.ink as number) >= 0 && (value.ink as number) <= 100
+      && Math.abs(value.x as number) <= this.level.halfSize + 4 && Math.abs(value.z as number) <= this.level.halfSize + 4
+      && Math.abs(value.y as number) < 20 && Math.abs(value.aimPitch as number) <= Math.PI / 2;
+  }
+
+  isValidBulletSnapshot(value: unknown): value is BulletSnapshot {
+    if (!isRecord(value)) return false;
+    return typeof value.id === "string" && typeof value.ownerId === "string" && typeof value.weaponId === "string" && this.hasWeapon(value.weaponId)
+      && (value.team === 0 || value.team === 1) && (value.kind === "shot" || value.kind === "droplet")
+      && ["x", "y", "z", "dx", "dy", "dz", "age", "distanceTraveled", "paintTrailIndex", "seed"].every((key) => typeof value[key] === "number" && Number.isFinite(value[key]))
+      && (value.age as number) >= 0 && (value.age as number) <= 3
+      && (value.distanceTraveled as number) >= 0 && (value.distanceTraveled as number) < 100
+      && Math.abs(value.x as number) <= this.level.halfSize + 4 && Math.abs(value.z as number) <= this.level.halfSize + 4
+      && Math.abs(value.y as number) < 20 && Math.hypot(value.dx as number, value.dy as number, value.dz as number) < 20;
   }
 
   removeBullet(id: string) {
@@ -249,6 +297,8 @@ export class GameWorld {
     runtime.firing = false;
     runtime.fireCooldown = 0;
     runtime.respawnRemaining = 0;
+    runtime.inkRecoveryDelay = 0;
+    runtime.damageRecoveryDelay = 0;
     return player;
   }
 
@@ -256,6 +306,7 @@ export class GameWorld {
     const player = this.playerStates.get(playerId);
     if (!player?.alive || !Number.isFinite(damage) || damage <= 0) return undefined;
     player.hp = Math.max(0, player.hp - damage);
+    this.ensurePlayerRuntime(playerId).damageRecoveryDelay = 1.2;
     const defeated = player.hp === 0;
     if (defeated) {
       player.alive = false;
@@ -283,6 +334,9 @@ export class GameWorld {
     const player = this.playerStates.get(playerId);
     if (!player?.alive || player.diving) return undefined;
     const weapon = this.weapons.get(player.weaponId);
+    if (player.ink < weapon.inkCost) return undefined;
+    player.ink = Math.max(0, player.ink - weapon.inkCost);
+    this.ensurePlayerRuntime(playerId).inkRecoveryDelay = 20 / 60;
     const bullet = createBulletState(shotId, player, direction, forward, right, weapon);
     this.bulletStates.set(bullet.id, bullet);
     const events: GameWorldEvent[] = [];
@@ -290,9 +344,9 @@ export class GameWorld {
       const stamps = createPaintStamps({
         id: `paint:${bullet.id}:foot`,
         team: bullet.team,
-        surfaceId: "ground",
+        surfaceId: createLevelFloorSurfaces(this.level).find((floor) => floor.id !== "ground" && Math.abs(floor.y - player.y) < 0.16 && Math.abs(player.x - floor.x) < floor.width / 2 && Math.abs(player.z - floor.z) < floor.depth / 2)?.id ?? "ground",
         x: player.x + forward.x * weapon.paint.footForwardOffset,
-        y: 0,
+        y: player.y,
         z: player.z + forward.z * weapon.paint.footForwardOffset,
         directionX: forward.x,
         directionY: 0,
@@ -310,11 +364,31 @@ export class GameWorld {
     const commandByPlayer = new Map(commands.map(({ playerId, input }) => [playerId, input]));
     const authority = new Set(commandByPlayer.keys());
     const events: GameWorldEvent[] = [];
+    for (const target of this.targetStates.values()) {
+      if (target.respawnRemaining > 0) {
+        target.respawnRemaining = Math.max(0, target.respawnRemaining - dt);
+        if (target.respawnRemaining === 0) target.hp = PLAYER_MAX_HP;
+      }
+    }
+    for (let index = this.inkFlows.length - 1; index >= 0; index--) {
+      const flow = this.inkFlows[index];
+      if (!authority.has(flow.ownerId)) continue;
+      flow.elapsed += dt;
+      if (flow.elapsed < flow.nextStep) continue;
+      const amount = Math.min(1, flow.elapsed / 0.18);
+      const stamp = growingStamp(flow.stamp, amount, "flow");
+      const tiles = this.applyPaint([stamp]);
+      events.push({ kind: "paint", ownerId: flow.ownerId, inkRevision: this.currentInkRevision, stamps: [stamp], tiles });
+      flow.nextStep += 1 / 30;
+      if (amount === 1) this.inkFlows.splice(index, 1);
+    }
     commandByPlayer.forEach((input, playerId) => {
       const player = this.playerStates.get(playerId);
       if (!player) return;
       const runtime = this.ensurePlayerRuntime(playerId);
       runtime.fireCooldown -= dt;
+      runtime.inkRecoveryDelay = Math.max(0, runtime.inkRecoveryDelay - dt);
+      runtime.damageRecoveryDelay = Math.max(0, runtime.damageRecoveryDelay - dt);
       if (!player.alive) {
         runtime.firing = false;
         runtime.fireCooldown = Math.max(0, runtime.fireCooldown);
@@ -332,7 +406,7 @@ export class GameWorld {
       const wallContact = this.physics.findWallContact(player);
       stepPlayerState(player, {
         ...input,
-        groundTeam: this.inkField.teamAt(player.x, player.z),
+        groundTeam: this.inkField.teamAt(player.x, player.z, player.y),
         wallContact: wallContact ? {
           ...wallContact,
           team: this.inkField.teamAtWall(
@@ -343,6 +417,11 @@ export class GameWorld {
           )
         } : undefined
       }, dt, this.physics);
+      if (runtime.damageRecoveryDelay === 0) player.hp = Math.min(PLAYER_MAX_HP, player.hp + 30 * dt);
+      if (runtime.inkRecoveryDelay === 0 && (!input.fire || player.diving)) {
+        const inOwnInk = player.wallAttached || player.diving && this.inkField.teamAt(player.x, player.z, player.y) === player.team;
+        player.ink = Math.min(100, player.ink + (inOwnInk ? 30 : 9) * dt);
+      }
       if (!input.fire || player.diving) {
         runtime.firing = false;
         runtime.fireCooldown = Math.max(0, runtime.fireCooldown);
@@ -357,6 +436,10 @@ export class GameWorld {
       const continuing = runtime.firing;
       runtime.firing = true;
       if (runtime.fireCooldown > 1e-9) return;
+      if (player.ink < this.weapons.get(player.weaponId).inkCost) {
+        runtime.fireCooldown = 0;
+        return;
+      }
       const shotIndex = ++runtime.bulletSequence;
       const result = this.shoot(
         playerId,
@@ -373,28 +456,34 @@ export class GameWorld {
       events.push(...result.events);
     });
     for (const bullet of [...this.bulletStates.values()]) {
+      const previous = { x: bullet.x, y: bullet.y, z: bullet.z };
       const weapon = this.weapons.get(bullet.weaponId);
       const result = stepBulletState(bullet, dt, this.physics, this.level, weapon);
+      if (authority.has(bullet.ownerId) && bullet.kind === "shot") {
+        const player = [...this.playerStates.values()].find((player) => player.id !== bullet.ownerId && player.team !== bullet.team && player.alive && bulletHitsPlayer(bullet, player, this.weapons, previous));
+        const target = !player ? [...this.targetStates.values()].find((target) => target.hp > 0 && bulletHitsPlayer(bullet, { ...target, diving: false }, this.weapons, previous)) : undefined;
+        if (player || target) {
+          this.bulletStates.delete(bullet.id);
+          if (player) events.push({ kind: "hit", ownerId: bullet.ownerId, bulletId: bullet.id, weaponId: bullet.weaponId, targetId: player.id, damage: weapon.damage });
+          if (target) {
+            target.hp = Math.max(0, target.hp - weapon.damage);
+            if (target.hp === 0) target.respawnRemaining = 2;
+            events.push({ kind: "target_hit", ownerId: bullet.ownerId, targetId: target.id, damage: weapon.damage, hp: target.hp });
+          }
+          events.push({ kind: "bullet_removed", ownerId: bullet.ownerId, bulletId: bullet.id });
+          continue;
+        }
+      }
       if (authority.has(bullet.ownerId)) {
         result.trailPaintImpacts.forEach((impact, index) => {
-          const stamps = createPaintStamps({
-            id: `paint:${bullet.id}:trail:${bullet.paintTrailIndex - result.trailPaintImpacts.length + index}`,
-            team: bullet.team,
-            ...impact,
-            directionX: bullet.dx,
-            directionY: bullet.dy,
-            directionZ: bullet.dz,
-            seed: bullet.seed ^ Math.imul(bullet.paintTrailIndex + index + 1, 0x45d9f3b),
-            kind: "trail"
-          }, weapon, this.wallSurfaces);
-          const tiles = this.applyPaint(stamps);
-          events.push({
-            kind: "paint",
-            ownerId: bullet.ownerId,
-            inkRevision: this.currentInkRevision,
-            stamps,
-            tiles
-          });
+          const droplet: BulletSnapshot = {
+            ...bullet, ...impact,
+            id: `${bullet.id}:drop:${bullet.paintTrailIndex - result.trailPaintImpacts.length + index}`,
+            kind: "droplet", dx: bullet.dx * 0.28, dy: -0.5, dz: bullet.dz * 0.28,
+            age: 0, distanceTraveled: 0, paintTrailIndex: 0
+          };
+          this.bulletStates.set(droplet.id, droplet);
+          events.push({ kind: "shot", ownerId: bullet.ownerId, bullet: { ...droplet } });
         });
       }
       if (!result.alive) {
@@ -407,14 +496,16 @@ export class GameWorld {
             directionY: bullet.dy,
             directionZ: bullet.dz,
             seed: bullet.seed ^ 0x9e3779b9,
-            kind: "impact"
+            kind: bullet.kind === "droplet" ? "trail" : "impact"
           }, weapon, this.wallSurfaces);
-          const tiles = this.applyPaint(stamps);
+          const growing = bullet.kind === "droplet" ? stamps : stamps.map((stamp) => growingStamp(stamp, 0, "impact"));
+          if (bullet.kind === "shot") stamps.forEach((stamp) => this.inkFlows.push({ ownerId: bullet.ownerId, stamp, elapsed: 0, nextStep: 1 / 30 }));
+          const tiles = this.applyPaint(growing);
           events.push({
             kind: "paint",
             ownerId: bullet.ownerId,
             inkRevision: this.currentInkRevision,
-            stamps,
+            stamps: growing,
             tiles
           });
         }
@@ -424,25 +515,6 @@ export class GameWorld {
         }
         continue;
       }
-      if (!authority.has(bullet.ownerId)) continue;
-      const target = [...this.playerStates.values()].find(
-        (player) =>
-          player.id !== bullet.ownerId &&
-          player.team !== bullet.team &&
-          player.alive &&
-          bulletHitsPlayer(bullet, player, this.weapons)
-      );
-      if (!target) continue;
-      this.bulletStates.delete(bullet.id);
-      events.push({
-        kind: "hit",
-        ownerId: bullet.ownerId,
-        bulletId: bullet.id,
-        weaponId: bullet.weaponId,
-        targetId: target.id,
-        damage: weapon.damage
-      });
-      events.push({ kind: "bullet_removed", ownerId: bullet.ownerId, bulletId: bullet.id });
     }
     this.currentTick += 1;
     return events;
@@ -513,7 +585,7 @@ export class GameWorld {
 
   snapshot(): GameWorldSnapshot {
     return {
-      version: 4,
+      version: 5,
       tick: this.currentTick,
       inkRevision: this.currentInkRevision,
       levelId: this.level.id,
@@ -521,13 +593,15 @@ export class GameWorld {
       players: [...this.playerStates.values()].map((player) => ({ ...player })),
       playerRuntime: [...this.playerRuntime.values()].map((state) => ({ ...state })),
       bullets: [...this.bulletStates.values()].map((bullet) => ({ ...bullet })),
-      ink: this.inkField.snapshot()
+      ink: this.inkField.snapshot(),
+      targets: [...this.targetStates.values()].map((target) => ({ ...target })),
+      inkFlows: this.inkFlows.map((flow) => ({ ...flow, stamp: { ...flow.stamp } }))
     };
   }
 
   restore(snapshot: GameWorldSnapshot) {
     if (
-      snapshot.version !== 4 ||
+      snapshot.version !== 5 ||
       !Number.isSafeInteger(snapshot.inkRevision) ||
       snapshot.inkRevision < 0 ||
       snapshot.inkRevision > MAX_INK_REVISION ||
@@ -553,16 +627,22 @@ export class GameWorld {
         state.fireCooldown < 0 ||
         !Number.isFinite(state.respawnRemaining) ||
         state.respawnRemaining < 0
+        || !Number.isFinite(state.inkRecoveryDelay) || state.inkRecoveryDelay < 0
+        || !Number.isFinite(state.damageRecoveryDelay) || state.damageRecoveryDelay < 0
       )
     ) throw new Error("Invalid player runtime snapshot");
     this.currentTick = snapshot.tick;
     this.currentInkRevision = snapshot.inkRevision;
+    for (const id of this.playerStates.keys()) this.physics.removePlayer(id);
     this.playerStates.clear();
     snapshot.players.forEach((player) => this.playerStates.set(player.id, { ...player }));
     this.playerRuntime.clear();
     snapshot.playerRuntime.forEach((state) => this.playerRuntime.set(state.playerId, { ...state }));
     this.bulletStates.clear();
     snapshot.bullets.forEach((bullet) => this.bulletStates.set(bullet.id, { ...bullet }));
+    this.targetStates.clear();
+    snapshot.targets.forEach((target) => this.targetStates.set(target.id, { ...target }));
+    this.inkFlows.splice(0, this.inkFlows.length, ...snapshot.inkFlows.map((flow) => ({ ...flow, stamp: { ...flow.stamp } })));
     this.inkField.restore(snapshot.ink);
   }
 
@@ -579,12 +659,25 @@ export class GameWorld {
         bulletSequence: 0,
         firing: false,
         fireCooldown: 0,
-        respawnRemaining: 0
+        respawnRemaining: 0,
+        inkRecoveryDelay: 0,
+        damageRecoveryDelay: 0
       };
       this.playerRuntime.set(playerId, runtime);
     }
     return runtime;
   }
+}
+
+function growingStamp(stamp: PaintStamp, progress: number, kind: PaintStamp["kind"]): PaintStamp {
+  const amount = 0.42 + 0.58 * (1 - (1 - progress) ** 2);
+  return {
+    ...stamp, kind,
+    x: stamp.originX + (stamp.x - stamp.originX) * amount,
+    y: stamp.originY + (stamp.y - stamp.originY) * amount,
+    z: stamp.originZ + (stamp.z - stamp.originZ) * amount,
+    radiusU: stamp.radiusU * amount, radiusV: stamp.radiusV * amount
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

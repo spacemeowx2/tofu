@@ -8,6 +8,7 @@
     "build": "pnpm -r build",
     "check": "pnpm -r check",
     "test:architecture": "node --import tsx scripts/smoke-architecture.ts",
+    "test:gameplay": "node --import tsx scripts/smoke-gameplay.ts && node --import tsx apps/client/scripts/smoke-camera.ts",
     "smoke": "node --import tsx scripts/smoke-multiplayer.ts"
   },
   "devDependencies": {

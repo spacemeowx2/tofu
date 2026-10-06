@@ -1,5 +1,5 @@
 import RAPIER from "@dimforge/rapier3d-compat";
-import type { PlayerSnapshot, WallSurfaceId } from "@tofu/protocol";
+import type { PaintSurfaceId, PlayerSnapshot, WallSurfaceId } from "@tofu/protocol";
 import { createLevelWallSurfaces, type LevelDefinition, type WallSurface } from "./level.js";
 import {
   playerCollider,
@@ -10,6 +10,7 @@ import {
 } from "./physics.js";
 
 type ColliderMetadata =
+  | { kind: "ground" }
   | { kind: "obstacle"; boxIndex: number }
   | { kind: "arena"; surfaceId: WallSurfaceId };
 
@@ -26,10 +27,18 @@ export class RapierPhysicsAdapter implements PhysicsAdapter {
   readonly kind = "rapier" as const;
   private readonly world = new RAPIER.World({ x: 0, y: 0, z: 0 });
   private readonly metadata = new Map<number, ColliderMetadata>();
+  private readonly characters = new Map<string, RAPIER.Collider>();
+  private readonly controller: RAPIER.KinematicCharacterController;
   private readonly surfaces: readonly WallSurface[];
   private readonly surfaceById: ReadonlyMap<WallSurfaceId, WallSurface>;
 
   constructor(private readonly level: LevelDefinition) {
+    this.controller = this.world.createCharacterController(0.01);
+    this.controller.enableSnapToGround(0.12);
+    const floor = this.world.createCollider(
+      RAPIER.ColliderDesc.cuboid(level.halfSize, 0.1, level.halfSize).setTranslation(0, -0.1, 0)
+    );
+    this.metadata.set(floor.handle, { kind: "ground" });
     this.surfaces = createLevelWallSurfaces(level);
     this.surfaceById = new Map(this.surfaces.map((surface) => [surface.id, surface]));
     level.obstacles.forEach((box, boxIndex) => {
@@ -47,26 +56,28 @@ export class RapierPhysicsAdapter implements PhysicsAdapter {
 
   resolvePlayerMovement(
     player: PlayerSnapshot,
-    delta: { x: number; z: number },
+    delta: Vec3,
     collider: { radius: number; height: number }
   ) {
     const shape = new RAPIER.Capsule(Math.max(0, (collider.height - collider.radius * 2) / 2), collider.radius);
-    const centerY = player.y + collider.height / 2;
-    const xResult = this.castAxis(
-      { x: player.x, y: centerY, z: player.z },
-      { x: delta.x, y: 0, z: 0 },
-      shape
-    );
-    const zResult = this.castAxis(
-      { x: xResult.position.x, y: centerY, z: player.z },
-      { x: 0, y: 0, z: delta.z },
-      shape
-    );
+    let character = this.characters.get(player.id);
+    if (!character) {
+      character = this.world.createCollider(RAPIER.ColliderDesc.capsule(shape.halfHeight, shape.radius).setCollisionGroups(0x00020001));
+      this.characters.set(player.id, character);
+    }
+    character.setShape(shape);
+    character.setTranslation({ x: player.x, y: player.y + collider.height / 2, z: player.z });
+    this.world.step();
+    this.controller.computeColliderMovement(character, delta, undefined, 0x00010001);
+    const movement = this.controller.computedMovement();
     return {
-      x: xResult.position.x,
-      z: zResult.position.z,
-      blockedX: xResult.blocked,
-      blockedZ: zResult.blocked
+      x: player.x + movement.x,
+      y: player.y + movement.y,
+      z: player.z + movement.z,
+      blockedX: Math.abs(movement.x - delta.x) > 0.001,
+      blockedY: Math.abs(movement.y - delta.y) > 0.001,
+      blockedZ: Math.abs(movement.z - delta.z) > 0.001,
+      grounded: this.controller.computedGrounded()
     };
   }
 
@@ -83,9 +94,11 @@ export class RapierPhysicsAdapter implements PhysicsAdapter {
     ];
     let closest: { distance: number; surface: WallSurface } | undefined;
     for (const velocity of probes) {
-      const hit = this.world.castShape(position, IDENTITY, velocity, shape, 0.001, 1, true);
+      const hit = this.world.castShape(position, IDENTITY, velocity, shape, 0.001, 1, true, undefined, 0x00010001);
       if (!hit) continue;
-      const surface = this.surfaceForHit(hit.collider.handle, hit.normal1);
+      if (Math.abs(hit.normal1.y) > 0.5) continue;
+      const id = this.surfaceForHit(hit.collider.handle, hit.normal1);
+      const surface = this.surfaceById.get(id as WallSurfaceId);
       if (!surface || player.y > surface.height) continue;
       const distance = hit.time_of_impact * probeDistance;
       if (!closest || distance < closest.distance) closest = { distance, surface };
@@ -102,14 +115,19 @@ export class RapierPhysicsAdapter implements PhysicsAdapter {
 
   castProjectile(from: Vec3, to: Vec3, radius: number): ProjectileImpact | undefined {
     const velocity = { x: to.x - from.x, y: to.y - from.y, z: to.z - from.z };
-    const hit = this.world.castShape(from, IDENTITY, velocity, new RAPIER.Ball(radius), 0, 1, true);
+    const hit = this.world.castShape(from, IDENTITY, velocity, new RAPIER.Ball(radius), 0, 1, true, undefined, 0x00010001);
     if (!hit) return undefined;
-    const surface = this.surfaceForHit(hit.collider.handle, hit.normal1);
-    if (!surface) return undefined;
+    const surfaceId = this.surfaceForHit(hit.collider.handle, hit.normal1);
+    if (!surfaceId) return undefined;
     const amount = hit.time_of_impact;
     const x = from.x + velocity.x * amount;
     const y = from.y + velocity.y * amount;
     const z = from.z + velocity.z * amount;
+    if (surfaceId === "ground" || surfaceId.startsWith("top-")) {
+      const height = surfaceId === "ground" ? 0 : this.level.obstacles[Number(surfaceId.slice(4))].height;
+      return { amount, impact: { surfaceId, x, y: height, z } };
+    }
+    const surface = this.surfaceById.get(surfaceId as WallSurfaceId)!;
     return {
       amount,
       impact: {
@@ -125,33 +143,23 @@ export class RapierPhysicsAdapter implements PhysicsAdapter {
     this.world.free();
   }
 
-  private castAxis(
-    position: Vec3,
-    velocity: Vec3,
-    shape: RAPIER.Shape
-  ): { position: Vec3; blocked: boolean } {
-    if (Math.abs(velocity.x) + Math.abs(velocity.z) < 1e-9) return { position, blocked: false };
-    const hit = this.world.castShape(position, IDENTITY, velocity, shape, 0.001, 1, true);
-    const amount = hit ? Math.max(0, hit.time_of_impact - 0.001) : 1;
-    return {
-      position: {
-        x: position.x + velocity.x * amount,
-        y: position.y,
-        z: position.z + velocity.z * amount
-      },
-      blocked: Boolean(hit)
-    };
+  removePlayer(id: string) {
+    const collider = this.characters.get(id);
+    if (collider) this.world.removeCollider(collider, false);
+    this.characters.delete(id);
   }
 
-  private surfaceForHit(handle: number, normal: Vec3): WallSurface | undefined {
+  private surfaceForHit(handle: number, normal: Vec3): PaintSurfaceId | undefined {
     const metadata = this.metadata.get(handle);
     if (!metadata) return undefined;
-    if (metadata.kind === "arena") return this.surfaceById.get(metadata.surfaceId);
+    if (metadata.kind === "ground") return "ground";
+    if (metadata.kind === "arena") return metadata.surfaceId;
+    if (normal.y > 0.5) return `top-${metadata.boxIndex}`;
     const prefix = `obstacle-${metadata.boxIndex}-`;
     const suffix = Math.abs(normal.x) >= Math.abs(normal.z)
       ? normal.x >= 0 ? "px" : "nx"
       : normal.z >= 0 ? "pz" : "nz";
-    return this.surfaceById.get(`${prefix}${suffix}` as WallSurfaceId);
+    return `${prefix}${suffix}` as WallSurfaceId;
   }
 
   private createArenaWalls() {

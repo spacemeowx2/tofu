@@ -1,5 +1,5 @@
-import type { PaintStamp, PaintSurfaceId, TeamId, WallSurfaceId } from "@tofu/protocol";
-import { createLevelWallSurfaces, type LevelDefinition, type WallSurface } from "./level.js";
+import type { HorizontalSurfaceId, PaintStamp, PaintSurfaceId, TeamId, WallSurfaceId } from "@tofu/protocol";
+import { createLevelFloorSurfaces, createLevelWallSurfaces, type FloorSurface, type LevelDefinition, type WallSurface } from "./level.js";
 
 const NEUTRAL = 255;
 export const DEFAULT_INK_RESOLUTION = 256;
@@ -48,6 +48,8 @@ export type InkTileHash = {
 
 export class TiledInkField {
   private readonly ground: SurfaceGrid;
+  private readonly floors = new Map<HorizontalSurfaceId, { surface: FloorSurface; grid: SurfaceGrid }>();
+  private readonly excludedGround = new Uint8Array(this.resolution * this.resolution);
   private readonly walls = new Map<WallSurfaceId, { surface: WallSurface; grid: SurfaceGrid }>();
 
   constructor(
@@ -57,16 +59,40 @@ export class TiledInkField {
     wallCellsPerUnit = WALL_INK_CELLS_PER_UNIT
   ) {
     this.ground = createGrid("ground", resolution, resolution);
+    for (const surface of createLevelFloorSurfaces(level)) {
+      const size = floorInkGridSize(surface);
+      this.floors.set(surface.id, { surface, grid: surface.id === "ground" ? this.ground : createGrid(surface.id, size.width, size.height) });
+    }
+    for (let y = 0; y < resolution; y++) for (let x = 0; x < resolution; x++) {
+      const wx = (x + 0.5) / resolution * level.halfSize * 2 - level.halfSize;
+      const wz = (y + 0.5) / resolution * level.halfSize * 2 - level.halfSize;
+      if (level.obstacles.some((box) => Math.abs(wx - box.x) < box.width / 2 && Math.abs(wz - box.z) < box.depth / 2)) this.excludedGround[y * resolution + x] = 1;
+    }
     for (const surface of createLevelWallSurfaces(level)) {
       const { width, height } = wallInkGridSize(surface, wallCellsPerUnit);
       this.walls.set(surface.id, { surface, grid: createGrid(surface.id, width, height) });
     }
   }
 
-  teamAt(x: number, z: number): TeamId | null {
-    const cell = this.groundCell(x, z);
+  teamAt(x: number, z: number, height = 0): TeamId | null {
+    const entry = [...this.floors.values()].find(({ surface }) => surface.id !== "ground" && Math.abs(surface.y - height) < 0.16 && Math.abs(x - surface.x) <= surface.width / 2 && Math.abs(z - surface.z) <= surface.depth / 2) ?? this.floors.get("ground")!;
+    const cell = this.floorCell(entry.surface, entry.grid, x, z);
     if (!cell) return null;
-    return ownerToTeam(this.ground.owners[cell.y * this.ground.width + cell.x]);
+    return ownerToTeam(entry.grid.owners[cell.y * entry.grid.width + cell.x]);
+  }
+
+  coverage(): readonly [number, number] {
+    const area = [0, 0];
+    let total = 0;
+    for (const { surface, grid } of this.floors.values()) {
+      const cellArea = surface.width * surface.depth / grid.owners.length;
+      grid.owners.forEach((owner, index) => {
+        if (surface.id === "ground" && this.excludedGround[index]) return;
+        total += cellArea;
+        if (owner === 0 || owner === 1) area[owner] += cellArea;
+      });
+    }
+    return [area[0] / total * 100, area[1] / total * 100];
   }
 
   teamAtWall(surfaceId: WallSurfaceId, x: number, y: number, z: number): TeamId | null {
@@ -80,13 +106,14 @@ export class TiledInkField {
   paint(stamp: PaintStamp, tick = 0) {
     if (!Number.isSafeInteger(tick) || tick < 0 || tick > MAX_INK_REVISION) return [];
     const writer = hashWriter(stamp.id);
-    if (stamp.surfaceId === "ground") {
+    const floor = this.floors.get(stamp.surfaceId as HorizontalSurfaceId);
+    if (floor) {
       return this.snapshotsForKeys(
-        this.ground,
-        this.paintGround(stamp, tick, writer)
+        floor.grid,
+        this.paintFloor(floor.surface, floor.grid, stamp, tick, writer)
       );
     }
-    const entry = this.walls.get(stamp.surfaceId);
+    const entry = this.walls.get(stamp.surfaceId as WallSurfaceId);
     if (!entry) return [];
     return this.snapshotsForKeys(
       entry.grid,
@@ -253,17 +280,18 @@ export class TiledInkField {
     return snapshots;
   }
 
-  private paintGround(stamp: PaintStamp & { surfaceId: "ground" }, tick: number, writer: number) {
+  private paintFloor(surface: FloorSurface, grid: SurfaceGrid, stamp: PaintStamp, tick: number, writer: number) {
     const changedTiles = new Set<string>();
-    const maxRadius = Math.max(stamp.radiusU, stamp.radiusV);
-    const min = this.groundCell(stamp.x - maxRadius, stamp.z - maxRadius, true)!;
-    const max = this.groundCell(stamp.x + maxRadius, stamp.z + maxRadius, true)!;
+    const maxRadius = Math.max(stamp.radiusU, stamp.radiusV) * 1.12;
+    const min = this.floorCell(surface, grid, stamp.x - maxRadius, stamp.z - maxRadius, true)!;
+    const max = this.floorCell(surface, grid, stamp.x + maxRadius, stamp.z + maxRadius, true)!;
     for (let y = min.y; y <= max.y; y += 1) {
       for (let x = min.x; x <= max.x; x += 1) {
-        const worldX = (x + 0.5) / this.ground.width * this.level.halfSize * 2 - this.level.halfSize;
-        const worldZ = (y + 0.5) / this.ground.height * this.level.halfSize * 2 - this.level.halfSize;
-        if (!ellipseContains(worldX - stamp.x, worldZ - stamp.z, stamp.radiusU, stamp.radiusV, stamp.rotation)) continue;
-        if (setCell(this.ground, x, y, stamp.team, tick, writer, this.tileSize)) {
+        if (surface.id === "ground" && this.excludedGround[y * grid.width + x]) continue;
+        const worldX = (x + 0.5) / grid.width * surface.width + surface.x - surface.width / 2;
+        const worldZ = (y + 0.5) / grid.height * surface.depth + surface.z - surface.depth / 2;
+        if (!ellipseContains(worldX - stamp.x, worldZ - stamp.z, stamp.radiusU, stamp.radiusV, stamp.rotation, writer)) continue;
+        if (setCell(grid, x, y, stamp.team, tick, writer, this.tileSize)) {
           changedTiles.add(tileKey(Math.floor(x / this.tileSize), Math.floor(y / this.tileSize)));
         }
       }
@@ -274,7 +302,7 @@ export class TiledInkField {
   private paintWall(surface: WallSurface, grid: SurfaceGrid, stamp: PaintStamp, tick: number, writer: number) {
     const changedTiles = new Set<string>();
     const stampU = surface.axis === "x" ? stamp.z : stamp.x;
-    const maxRadius = Math.max(stamp.radiusU, stamp.radiusV);
+    const maxRadius = Math.max(stamp.radiusU, stamp.radiusV) * 1.12;
     const minU = Math.max(0, Math.floor((stampU - maxRadius - surface.minAlong) / (surface.maxAlong - surface.minAlong) * grid.width));
     const maxU = Math.min(grid.width - 1, Math.floor((stampU + maxRadius - surface.minAlong) / (surface.maxAlong - surface.minAlong) * grid.width));
     const minV = Math.max(0, Math.floor((stamp.y - maxRadius) / surface.height * grid.height));
@@ -283,7 +311,7 @@ export class TiledInkField {
       for (let x = minU; x <= maxU; x += 1) {
         const worldU = surface.minAlong + (x + 0.5) / grid.width * (surface.maxAlong - surface.minAlong);
         const worldV = (y + 0.5) / grid.height * surface.height;
-        if (!ellipseContains(worldU - stampU, worldV - stamp.y, stamp.radiusU, stamp.radiusV, stamp.rotation)) continue;
+        if (!ellipseContains(worldU - stampU, worldV - stamp.y, stamp.radiusU, stamp.radiusV, stamp.rotation, writer)) continue;
         if (setCell(grid, x, y, stamp.team, tick, writer, this.tileSize)) {
           changedTiles.add(tileKey(Math.floor(x / this.tileSize), Math.floor(y / this.tileSize)));
         }
@@ -292,13 +320,13 @@ export class TiledInkField {
     return changedTiles;
   }
 
-  private groundCell(x: number, z: number, clamp = false) {
-    const cellX = Math.floor((x + this.level.halfSize) / (this.level.halfSize * 2) * this.ground.width);
-    const cellY = Math.floor((z + this.level.halfSize) / (this.level.halfSize * 2) * this.ground.height);
-    if (!clamp && (cellX < 0 || cellX >= this.ground.width || cellY < 0 || cellY >= this.ground.height)) return undefined;
+  private floorCell(surface: FloorSurface, grid: SurfaceGrid, x: number, z: number, clamp = false) {
+    const cellX = Math.floor((x - surface.x + surface.width / 2) / surface.width * grid.width);
+    const cellY = Math.floor((z - surface.z + surface.depth / 2) / surface.depth * grid.height);
+    if (!clamp && (cellX < 0 || cellX >= grid.width || cellY < 0 || cellY >= grid.height)) return undefined;
     return {
-      x: Math.max(0, Math.min(this.ground.width - 1, cellX)),
-      y: Math.max(0, Math.min(this.ground.height - 1, cellY))
+      x: Math.max(0, Math.min(grid.width - 1, cellX)),
+      y: Math.max(0, Math.min(grid.height - 1, cellY))
     };
   }
 
@@ -312,11 +340,11 @@ export class TiledInkField {
   }
 
   private grid(surfaceId: PaintSurfaceId) {
-    return surfaceId === "ground" ? this.ground : this.walls.get(surfaceId)?.grid;
+    return this.floors.get(surfaceId as HorizontalSurfaceId)?.grid ?? this.walls.get(surfaceId as WallSurfaceId)?.grid;
   }
 
   private *grids(): Generator<SurfaceGrid> {
-    yield this.ground;
+    for (const { grid } of this.floors.values()) yield grid;
     for (const { grid } of this.walls.values()) yield grid;
   }
 
@@ -339,6 +367,10 @@ export function wallInkGridSize(
     width: Math.max(1, Math.ceil((surface.maxAlong - surface.minAlong) * cellsPerUnit)),
     height: Math.max(1, Math.ceil(surface.height * cellsPerUnit))
   };
+}
+
+export function floorInkGridSize(surface: FloorSurface) {
+  return { width: Math.max(1, Math.ceil(surface.width * WALL_INK_CELLS_PER_UNIT)), height: Math.max(1, Math.ceil(surface.depth * WALL_INK_CELLS_PER_UNIT)) };
 }
 
 function createGrid(surfaceId: PaintSurfaceId, width: number, height: number): SurfaceGrid {
@@ -435,11 +467,14 @@ function hashWriter(id: string) {
   return hash >>> 0 || 1;
 }
 
-function ellipseContains(deltaU: number, deltaV: number, radiusU: number, radiusV: number, rotation: number) {
+function ellipseContains(deltaU: number, deltaV: number, radiusU: number, radiusV: number, rotation: number, seed: number) {
   if (radiusU <= 0 || radiusV <= 0) return false;
   const cos = Math.cos(rotation);
   const sin = Math.sin(rotation);
   const localU = deltaU * cos + deltaV * sin;
   const localV = -deltaU * sin + deltaV * cos;
-  return (localU / radiusU) ** 2 + (localV / radiusV) ** 2 <= 1;
+  const angle = Math.atan2(localV / radiusV, localU / radiusU);
+  const phase = (seed % 4096) / 4096 * Math.PI * 2;
+  const edge = 1 + 0.055 * Math.sin(angle * 5 + phase) + 0.035 * Math.sin(angle * 9 - phase);
+  return (localU / radiusU) ** 2 + (localV / radiusV) ** 2 <= edge * edge;
 }

@@ -1,5 +1,5 @@
 export const ROOM_NAME = "tofu_arena";
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 export const PLAYER_MAX_HP = 100;
 export const PLAYER_RADIUS = 0.45;
 export const PLAYER_COLLIDER_HEIGHT = 1.3;
@@ -12,7 +12,9 @@ export type PhysicsKind = "analytic" | "rapier";
 export type ObstacleWallSurfaceId = `obstacle-${number}-${"px" | "nx" | "pz" | "nz"}`;
 export type ArenaWallSurfaceId = `arena-${"east" | "west" | "north" | "south"}`;
 export type WallSurfaceId = ObstacleWallSurfaceId | ArenaWallSurfaceId;
-export type PaintSurfaceId = "ground" | WallSurfaceId;
+export type TopSurfaceId = `top-${number}`;
+export type HorizontalSurfaceId = "ground" | TopSurfaceId;
+export type PaintSurfaceId = HorizontalSurfaceId | WallSurfaceId;
 
 export type PlayerSnapshot = {
   id: string;
@@ -28,6 +30,9 @@ export type PlayerSnapshot = {
   facingX: number;
   facingZ: number;
   hp: number;
+  ink: number;
+  aimPitch: number;
+  grounded: boolean;
   alive: boolean;
   diving: boolean;
   wallAttached: boolean;
@@ -36,6 +41,7 @@ export type PlayerSnapshot = {
 
 export type BulletSnapshot = {
   id: string;
+  kind: "shot" | "droplet";
   ownerId: string;
   team: TeamId;
   x: number;
@@ -88,7 +94,7 @@ export type BulletRemovedPacket = PacketHeader & {
 type PaintStampBase = {
   id: string;
   team: TeamId;
-  kind: "impact" | "trail" | "foot";
+  kind: "impact" | "flow" | "trail" | "foot";
   originX: number;
   originY: number;
   originZ: number;
@@ -100,7 +106,7 @@ type PaintStampBase = {
   rotation: number;
 };
 
-export type GroundPaintStamp = PaintStampBase & { surfaceId: "ground" };
+export type GroundPaintStamp = PaintStampBase & { surfaceId: HorizontalSurfaceId };
 export type WallPaintStamp = PaintStampBase & { surfaceId: WallSurfaceId };
 export type PaintStamp = GroundPaintStamp | WallPaintStamp;
 

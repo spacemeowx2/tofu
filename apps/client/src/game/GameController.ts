@@ -11,6 +11,8 @@ export class GameController {
   private localPlayerId = "";
   private firing = false;
   private fireQueued = false;
+  private hudCountdown = 0;
+  private audio?: AudioContext;
 
   constructor(
     private readonly world: GameWorld,
@@ -24,11 +26,14 @@ export class GameController {
 
   attachLocalPlayer(player: Readonly<PlayerSnapshot>) {
     this.localPlayerId = player.id;
+    this.camera.reset(player);
     this.session.attachLocalPlayer(player);
+    this.renderer.followLocalPlayer(this.camera, this.localPlayerId);
   }
 
   look(deltaX: number, deltaY: number) {
     this.camera.look(deltaX, deltaY);
+    this.renderer.followLocalPlayer(this.camera, this.localPlayerId);
     const player = this.localPlayer();
     if (player) this.camera.updateAim(player, this.world.weaponFor(player));
   }
@@ -36,6 +41,10 @@ export class GameController {
   setFiring(active: boolean) {
     if (this.firing === active) return;
     this.firing = active;
+    if (active) {
+      this.audio ??= new AudioContext({ latencyHint: "interactive" });
+      void this.audio.resume();
+    }
     if (active) this.fireQueued = true;
   }
 
@@ -72,17 +81,29 @@ export class GameController {
     this.fireQueued = false;
     this.renderer.syncPlayer(player, true);
     this.world.bullets.forEach((bullet) => this.renderer.syncBullet(bullet));
-    events.forEach((event) => this.session.publishWorldEvent(event));
+    events.forEach((event) => {
+      this.session.publishWorldEvent(event);
+      if (event.kind === "shot" && event.bullet.kind === "shot") this.sound(false);
+      if (event.kind === "hit" || event.kind === "target_hit") this.sound(true);
+    });
     this.renderer.pruneBullets(this.world.bullets);
+    this.renderer.syncTargets(this.world.targets.values());
   }
 
   sendState() {
     this.session.broadcastPlayerState();
   }
 
-  frame(dt: number) {
-    this.renderer.update(dt, this.localPlayerId);
+  frame(dt: number, alpha: number) {
+    this.renderer.update(dt, this.localPlayerId, alpha);
     this.renderer.followLocalPlayer(this.camera, this.localPlayerId);
+    this.hudCountdown -= dt;
+    const local = this.localPlayer();
+    if (local && this.hudCountdown <= 0) {
+      this.hudCountdown = 0.12;
+      this.hud.renderGame(local, this.world.turfCoverage(), this.world.ink.teamAt(local.x, local.z, local.y));
+      this.hud.renderPlayers(this.world.players.values(), local.id);
+    }
     this.scene.render();
   }
 
@@ -93,6 +114,24 @@ export class GameController {
 
   handleLocalDamage(attackerName: string, damage: number) {
     this.hud.addFeed(`${attackerName} 命中你，造成 ${damage} 点伤害`);
+    this.hud.damage();
+  }
+
+  dispose() { void this.audio?.close(); }
+
+  private sound(hit: boolean) {
+    const audio = this.audio;
+    if (!audio || audio.state !== "running") return;
+    const tone = audio.createOscillator();
+    const gain = audio.createGain();
+    tone.type = hit ? "sine" : "triangle";
+    tone.frequency.setValueAtTime(hit ? 850 : 340, audio.currentTime);
+    tone.frequency.exponentialRampToValueAtTime(hit ? 1250 : 75, audio.currentTime + 0.055);
+    gain.gain.setValueAtTime(hit ? 0.055 : 0.045, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.065);
+    tone.connect(gain); gain.connect(audio.destination);
+    tone.start(); tone.stop(audio.currentTime + 0.07);
+    tone.onended = () => { tone.disconnect(); gain.disconnect(); };
   }
 
   private localPlayer() {

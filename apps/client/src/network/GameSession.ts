@@ -73,10 +73,15 @@ export class GameSession {
 
   sendShot(bullet: Readonly<BulletSnapshot>) {
     this.renderer.syncBullet(bullet);
+    if (bullet.kind === "shot") this.renderer.shootEffect(bullet.ownerId);
     this.send({ kind: "shot", bullet: { ...bullet } });
   }
 
   publishWorldEvent(event: GameWorldEvent) {
+    if (event.kind === "target_hit") {
+      this.hud.hit(event.damage, event.hp === 0);
+      return;
+    }
     if (event.kind === "paint") {
       if (event.tiles.length > 0) this.renderer.applyPaint(event.stamps, event.tiles);
       this.send({ kind: "paint", paintRevision: event.inkRevision, stamps: event.stamps });
@@ -92,6 +97,7 @@ export class GameSession {
       return;
     }
     if (event.kind === "hit") {
+      this.hud.hit(event.damage, false);
       this.send({
         kind: "hit",
         bulletId: event.bulletId,
@@ -163,9 +169,10 @@ export class GameSession {
       packet.inkRevision < 0 ||
       packet.inkRevision > MAX_INK_REVISION
     ) return;
+    if (!this.roster.has(packet.peerId)) return;
     if (packet.kind === "player_state") {
       if (
-        packet.player.id !== packet.peerId ||
+        !this.world.isValidPlayerSnapshot(packet.player) || packet.player.id !== packet.peerId ||
         packet.sequence <= (this.lastStateSequence.get(packet.peerId) ?? -1) ||
         packet.player.team !== this.roster.get(packet.peerId)?.team ||
         !this.world.hasWeapon(packet.player.weaponId)
@@ -178,15 +185,17 @@ export class GameSession {
     }
     if (packet.kind === "shot") {
       if (
-        packet.bullet.ownerId !== packet.peerId ||
+        !this.world.isValidBulletSnapshot(packet.bullet) || packet.bullet.ownerId !== packet.peerId ||
         this.world.bullets.has(packet.bullet.id) ||
         !this.world.hasWeapon(packet.bullet.weaponId) ||
         !this.world.addBullet(packet.bullet)
       ) return;
       this.renderer.syncBullet(packet.bullet);
+      if (packet.bullet.kind === "shot") this.renderer.shootEffect(packet.peerId);
       return;
     }
     if (packet.kind === "bullet_removed") {
+      if (this.world.bullets.get(packet.bulletId)?.ownerId !== packet.peerId) return;
       this.world.removeBullet(packet.bulletId);
       this.renderer.removeBullet(packet.bulletId);
       return;

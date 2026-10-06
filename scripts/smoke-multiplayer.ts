@@ -249,6 +249,7 @@ try {
   const target = projectileWorld.createPlayer("target", "target", 1, SPLATTERSHOT.id);
   projectileWorld.addBullet({
     id: "hit-probe",
+    kind: "shot",
     ownerId: shooter.id,
     team: shooter.team,
     x: target.x,

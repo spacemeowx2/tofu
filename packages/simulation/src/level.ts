@@ -1,4 +1,4 @@
-import type { TeamId, WallSurfaceId } from "@tofu/protocol";
+import type { HorizontalSurfaceId, TeamId, WallSurfaceId } from "@tofu/protocol";
 
 export type LevelBox = {
   readonly id: string;
@@ -18,6 +18,53 @@ export type LevelDefinition = {
   readonly arenaWallHeight: number;
   readonly obstacles: readonly LevelBox[];
   readonly spawns: Readonly<Record<TeamId, readonly LevelSpawn[]>>;
+  readonly targets?: readonly { id: string; x: number; z: number; y: number }[];
+};
+
+export type FloorSurface = {
+  id: HorizontalSurfaceId;
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  y: number;
+};
+
+export function createLevelFloorSurfaces(level: LevelDefinition): readonly FloorSurface[] {
+  return [
+    { id: "ground", x: 0, z: 0, width: level.halfSize * 2, depth: level.halfSize * 2, y: 0 },
+    ...level.obstacles.map((box, index) => ({
+      id: `top-${index}` as const, x: box.x, z: box.z,
+      width: box.width, depth: box.depth, y: box.height
+    }))
+  ];
+}
+
+export const TOFU_ARENA_LEVEL: LevelDefinition = {
+  id: "rooftop-yard",
+  displayName: "屋顶试射场",
+  halfSize: 14,
+  arenaWallHeight: 1.1,
+  obstacles: [
+    { id: "center-west", x: -3.8, z: 0, width: 2.4, depth: 4.2, height: 2.4 },
+    { id: "center-east", x: 3.8, z: 0, width: 2.4, depth: 4.2, height: 2.4 },
+    { id: "south-platform", x: -5.4, z: -5.8, width: 4.2, depth: 3.2, height: 1.1 },
+    { id: "north-platform", x: 5.4, z: 5.8, width: 4.2, depth: 3.2, height: 1.1 },
+    { id: "south-step", x: -5.4, z: -8.1, width: 4.2, depth: 1.2, height: 0.5 },
+    { id: "north-step", x: 5.4, z: 8.1, width: 4.2, depth: 1.2, height: 0.5 },
+    { id: "east-cover", x: 8.6, z: -2.8, width: 1.4, depth: 4, height: 1.7 },
+    { id: "west-cover", x: -8.6, z: 2.8, width: 1.4, depth: 4, height: 1.7 }
+  ],
+  spawns: {
+    0: [{ x: 0, z: -8.5 }, { x: -2, z: -10 }, { x: 2, z: -10 }, { x: -7, z: -10 }],
+    1: [{ x: 0, z: 8.5 }, { x: 2, z: 10 }, { x: -2, z: 10 }, { x: 7, z: 10 }]
+  },
+  targets: [
+    { id: "target-near", x: 2.1, y: 0, z: -6 },
+    { id: "target-mid", x: 0, y: 0, z: -2.6 },
+    { id: "target-far", x: -2.1, y: 0, z: 3.2 },
+    { id: "target-north", x: -2.1, y: 0, z: 6 }
+  ]
 };
 
 export type WallSurface = {

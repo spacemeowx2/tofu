@@ -1,5 +1,5 @@
 import type { WeaponId } from "@tofu/protocol";
-import { TOFU_TEST_LEVEL, type LevelDefinition } from "./level.js";
+import { TOFU_ARENA_LEVEL, type LevelDefinition } from "./level.js";
 import { DEFAULT_WEAPONS, SPLATTERSHOT, type WeaponCatalog } from "./weapons.js";
 
 export type GameContentDefinition = {
@@ -10,8 +10,8 @@ export type GameContentDefinition = {
 };
 
 export const TOFU_DEMO_CONTENT: GameContentDefinition = {
-  id: "tofu-demo",
-  level: TOFU_TEST_LEVEL,
+  id: "tofu-yard-v2",
+  level: TOFU_ARENA_LEVEL,
   weapons: DEFAULT_WEAPONS,
   defaultWeaponId: SPLATTERSHOT.id
 };

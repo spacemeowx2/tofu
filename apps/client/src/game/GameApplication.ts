@@ -35,7 +35,8 @@ export class GameApplication {
     private readonly controls: HTMLDivElement,
     private readonly content: GameContentDefinition
   ) {
-    this.engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+    this.engine = new Engine(canvas, true, { stencil: true });
+    this.engine.setHardwareScalingLevel(Math.max(1, window.devicePixelRatio / 1.5));
     this.scene = new Scene(this.engine);
     this.camera = new ThirdPersonCamera(this.scene);
     this.renderer = new GameRenderer(
@@ -95,7 +96,7 @@ export class GameApplication {
           controller?.sendState();
         },
         onMaintenance: () => controller?.reconcileInk(),
-        onFrame: (dt) => controller?.frame(dt)
+        onFrame: (dt, alpha) => controller?.frame(dt, alpha)
       });
       this.engine.runRenderLoop(() => runtime.advance(this.engine.getDeltaTime() / 1000));
       await this.connect(session, world, controller);
@@ -125,7 +126,7 @@ export class GameApplication {
         connected.team,
         connected.roomId
       );
-      const player = restored && world.hasWeapon(restored.weaponId)
+      const player = restored && world.isValidPlayerSnapshot(restored)
         ? world.upsertPlayer(restored)
         : world.createPlayer(
           connected.peerId,
@@ -135,11 +136,16 @@ export class GameApplication {
           teamSlot
         );
       controller.attachLocalPlayer(player);
-      this.hud.setStatus(`转发模式 · 房间 ${connected.roomId.slice(0, 6)} · ${name}`, true);
-      this.hud.addFeed(`已加入 ${connected.team === 0 ? "橙队" : "青队"}；模拟由你的客户端拥有`);
+      this.hud.setStatus(`已联机 · ${name}`, true);
+      this.scene.executeWhenReady(() => this.hud.ready());
+      this.hud.addFeed(`已加入${connected.team === 0 ? "橙队" : "青队"} · 涂出路线，再潜入墨水`);
     } catch (error) {
-      this.hud.setStatus("无法连接转发节点");
-      this.hud.addFeed(error instanceof Error ? error.message : String(error));
+      const player = world.createPlayer(stablePeerId, name, 0, this.content.defaultWeaponId);
+      controller.attachLocalPlayer(player);
+      this.hud.setStatus("单人训练 · 联机未连接");
+      this.scene.executeWhenReady(() => this.hud.ready());
+      this.hud.addFeed("可继续单人试射；刷新页面可重新连接");
+      console.warn("Relay connection failed", error);
     }
   }
 
@@ -148,6 +154,7 @@ export class GameApplication {
   private dispose = () => {
     this.engine.stopRenderLoop();
     this.input?.dispose();
+    this.controller?.dispose();
     this.renderer.dispose();
     this.world?.dispose();
     void this.session?.close();

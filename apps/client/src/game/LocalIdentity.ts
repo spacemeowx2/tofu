@@ -1,7 +1,7 @@
 import type { PlayerSnapshot, TeamId } from "@tofu/protocol";
 
 const PEER_ID_STORAGE_KEY = "tofu.peerId";
-const PLAYER_STATE_STORAGE_KEY = "tofu.playerState";
+const PLAYER_STATE_STORAGE_KEY = "tofu.playerState.v7";
 
 export class LocalIdentity {
   peerId() {

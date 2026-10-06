@@ -32,7 +32,7 @@ export type ResolvedPlayerInput = PlayerInput & {
   wallContact?: WallContact & { team: TeamId | null };
 };
 
-export type PaintSplatKind = PaintStamp["kind"];
+export type PaintSplatKind = Exclude<PaintStamp["kind"], "flow">;
 
 type PaintSplatInput = {
   id: string;
@@ -68,9 +68,12 @@ export function createPlayerState(
     vx: 0,
     vy: 0,
     vz: 0,
-    facingX: team === 0 ? 1 : -1,
-    facingZ: 0,
+    facingX: -spawn.x / (Math.hypot(spawn.x, spawn.z) || 1),
+    facingZ: -spawn.z / (Math.hypot(spawn.x, spawn.z) || 1),
     hp: PLAYER_MAX_HP,
+    ink: 100,
+    aimPitch: 0,
+    grounded: true,
     alive: true,
     diving: false,
     wallAttached: false,
@@ -94,23 +97,30 @@ export function stepPlayerState(
     player.vy = 0;
     player.vz = 0;
     const climbInput = Math.max(0, -(input.moveX * wall.normalX + input.moveZ * wall.normalZ));
-    player.y = Math.min(wall.height, player.y + climbInput * 4.2 * dt);
+    player.y = Math.min(wall.height + 0.04, player.y + climbInput * 4.2 * dt);
     player.x = wall.x + wall.normalX * PLAYER_DIVE_RADIUS;
     player.z = wall.z + wall.normalZ * PLAYER_DIVE_RADIUS;
+    if (player.y >= wall.height) {
+      player.x -= wall.normalX * (PLAYER_DIVE_RADIUS + 0.15);
+      player.z -= wall.normalZ * (PLAYER_DIVE_RADIUS + 0.15);
+      player.wallAttached = false;
+    }
     return;
   }
 
   player.wallAttached = false;
   player.wallSurfaceId = "";
-  const grounded = player.y <= 0.0001;
-  if (input.jumpPressed && grounded && !input.diving) {
+  const grounded = player.grounded;
+  if (input.jumpPressed && grounded) {
     player.vy = 7.2;
     player.diving = false;
   } else {
     player.diving = input.diving && grounded;
   }
 
-  const maxSpeed = player.diving && input.groundTeam === player.team ? 7.4 : 5.5;
+  const ownInk = input.groundTeam === player.team;
+  const enemyInk = input.groundTeam !== null && !ownInk;
+  const maxSpeed = player.diving ? ownInk ? 7.4 : 2.1 : enemyInk && grounded ? 2.6 : input.fire ? 3.8 : 5.5;
   const hasInput = Math.hypot(input.moveX, input.moveZ) > 0.01;
   const acceleration = hasInput ? 30 : 42;
   player.vx = approach(player.vx, input.moveX * maxSpeed, acceleration * dt);
@@ -121,21 +131,23 @@ export function stepPlayerState(
     player.facingX = player.vx / speed;
     player.facingZ = player.vz / speed;
   }
-
-  player.vy -= 20 * dt;
-  player.y += player.vy * dt;
-  if (player.y <= 0) {
-    player.y = 0;
-    player.vy = 0;
+  if (input.fire && !player.diving) {
+    player.facingX = input.fire.forward.x;
+    player.facingZ = input.fire.forward.z;
+    player.aimPitch = Math.asin(Math.max(-1, Math.min(1, input.fire.direction.y)));
   }
 
+  player.vy -= 20 * dt;
   const movement = physics.resolvePlayerMovement(
     player,
-    { x: player.vx * dt, z: player.vz * dt },
+    { x: player.vx * dt, y: player.vy * dt, z: player.vz * dt },
     playerCollider(player)
   );
   player.x = movement.x;
+  player.y = movement.y;
   player.z = movement.z;
+  player.grounded = movement.grounded;
+  if (movement.blockedY) player.vy = 0;
   if (movement.blockedX) player.vx = 0;
   if (movement.blockedZ) player.vz = 0;
 }
@@ -162,6 +174,7 @@ export function createBulletState(
   return {
     id,
     ownerId: player.id,
+    kind: "shot",
     team: player.team,
     x: player.x + forward.x * weapon.muzzle.forward + right.x * weapon.muzzle.side,
     y: player.y + weapon.muzzle.height,
@@ -186,7 +199,7 @@ export function stepBulletState(
 ) {
   const previous = { x: bullet.x, y: bullet.y, z: bullet.z };
   bullet.age += dt;
-  const flightSpeed = bullet.distanceTraveled < weapon.projectile.paintRange
+  const flightSpeed = bullet.kind === "droplet" ? 6 : bullet.distanceTraveled < weapon.projectile.paintRange
     ? weapon.projectile.speed
     : weapon.projectile.speed * weapon.projectile.falloffSpeedMultiplier;
   bullet.x += bullet.dx * flightSpeed * dt;
@@ -194,16 +207,12 @@ export function stepBulletState(
   bullet.z += bullet.dz * flightSpeed * dt;
   bullet.dy -= weapon.projectile.gravity / flightSpeed * dt;
   const segmentDistance = Math.hypot(bullet.x - previous.x, bullet.y - previous.y, bullet.z - previous.z);
-  const groundAmount = previous.y > weapon.projectile.radius && bullet.y <= weapon.projectile.radius
-    ? (previous.y - weapon.projectile.radius) / (previous.y - bullet.y)
-    : undefined;
   const wallImpact = physics.castProjectile(previous, bullet, weapon.projectile.radius);
-  const groundWins = groundAmount !== undefined && (!wallImpact || groundAmount <= wallImpact.amount);
-  const travelAmount = (groundWins ? groundAmount : wallImpact?.amount) ?? 1;
+  const travelAmount = wallImpact?.amount ?? 1;
   const previousDistance = bullet.distanceTraveled;
   const nextDistance = previousDistance + segmentDistance * travelAmount;
-  const trailPaintImpacts: Array<{ surfaceId: "ground"; x: number; y: 0; z: number }> = [];
-  const pattern = weapon.paint.trailPatterns[bullet.seed % weapon.paint.trailPatterns.length];
+  const trailPaintImpacts: Array<{ surfaceId: "ground"; x: number; y: number; z: number }> = [];
+  const pattern = bullet.kind === "droplet" ? [] : weapon.paint.trailPatterns[bullet.seed % weapon.paint.trailPatterns.length];
   while (bullet.paintTrailIndex < pattern.length) {
     const distance = pattern[bullet.paintTrailIndex];
     if (distance > nextDistance) break;
@@ -212,23 +221,14 @@ export function stepBulletState(
       : 0;
     const x = previous.x + (bullet.x - previous.x) * amount;
     const z = previous.z + (bullet.z - previous.z) * amount;
+    const y = previous.y + (bullet.y - previous.y) * amount;
     if (Math.abs(x) <= level.halfSize && Math.abs(z) <= level.halfSize) {
-      trailPaintImpacts.push({ surfaceId: "ground", x, y: 0, z });
+      trailPaintImpacts.push({ surfaceId: "ground", x, y, z });
     }
     bullet.paintTrailIndex += 1;
   }
   bullet.distanceTraveled = nextDistance;
 
-  if (groundWins) {
-    bullet.x = previous.x + (bullet.x - previous.x) * groundAmount;
-    bullet.y = weapon.projectile.radius;
-    bullet.z = previous.z + (bullet.z - previous.z) * groundAmount;
-    return {
-      alive: false,
-      trailPaintImpacts,
-      paintImpact: { surfaceId: "ground" as const, x: bullet.x, y: 0, z: bullet.z }
-    };
-  }
   if (wallImpact) {
     bullet.x = previous.x + (bullet.x - previous.x) * wallImpact.amount;
     bullet.y = previous.y + (bullet.y - previous.y) * wallImpact.amount;
@@ -251,14 +251,15 @@ export function createPaintStamps(
   weapon: WeaponDefinition,
   wallSurfaces: readonly WallSurface[]
 ): PaintStamp[] {
-  const surface = input.surfaceId === "ground"
+  const horizontal = input.surfaceId === "ground" || input.surfaceId.startsWith("top-");
+  const surface = horizontal
     ? undefined
     : wallSurfaces.find((candidate) => candidate.id === input.surfaceId);
-  if (input.surfaceId !== "ground" && !surface) return [];
-  const directionU = input.surfaceId === "ground"
+  if (!horizontal && !surface) return [];
+  const directionU = horizontal
     ? input.directionX
     : surface!.axis === "x" ? input.directionZ : input.directionX;
-  const directionV = input.surfaceId === "ground" ? input.directionZ : input.directionY;
+  const directionV = horizontal ? input.directionZ : input.directionY;
   const baseRotation = Math.atan2(directionV, directionU);
   const definition = weapon.paint.splats[input.kind];
   const marks: PaintStamp[] = [];
@@ -279,7 +280,7 @@ export function createPaintStamps(
     let directionalCenterOffset = 0;
     if (
       isMain &&
-      input.surfaceId === "ground" &&
+      horizontal &&
       definition.floorForwardStretch
     ) {
       const horizontalSpeed = Math.hypot(input.directionX, input.directionZ);
@@ -308,7 +309,7 @@ export function createPaintStamps(
       directionalCenterOffset = (forwardExtent - rearExtent) / 2;
     }
     let { x, y, z } = input;
-    if (input.surfaceId === "ground") {
+    if (horizontal) {
       x += offsetU + directionalCenterOffset * cos;
       z += offsetV + directionalCenterOffset * sin;
     } else if (surface!.axis === "x") {
@@ -339,14 +340,32 @@ export function createPaintStamps(
 
 export function bulletHitsPlayer(
   bullet: BulletSnapshot,
-  player: PlayerSnapshot,
-  weapons: WeaponCatalog
+  player: Pick<PlayerSnapshot, "x" | "y" | "z" | "diving">,
+  weapons: WeaponCatalog,
+  from: { x: number; y: number; z: number } = bullet
 ) {
   const radius = player.diving ? PLAYER_DIVE_RADIUS : PLAYER_RADIUS;
   const height = player.diving ? PLAYER_DIVE_COLLIDER_HEIGHT : PLAYER_COLLIDER_HEIGHT;
-  const nearestY = Math.max(player.y + radius, Math.min(player.y + height - radius, bullet.y));
-  return Math.hypot(bullet.x - player.x, bullet.y - nearestY, bullet.z - player.z) <=
-    radius + weapons.get(bullet.weaponId).projectile.radius;
+  const lo = player.y + radius;
+  const hi = player.y + height - radius;
+  const vx = bullet.x - from.x, vy = bullet.y - from.y, vz = bullet.z - from.z;
+  const lengthSquared = vx * vx + vy * vy + vz * vz;
+  const expandedRadius = radius + weapons.get(bullet.weaponId).projectile.radius;
+  const distanceAt = (t: number) => Math.hypot(
+    from.x + vx * t - player.x,
+    from.y + vy * t - Math.max(lo, Math.min(hi, from.y + vy * t)),
+    from.z + vz * t - player.z
+  );
+  if (distanceAt(0) <= expandedRadius || distanceAt(1) <= expandedRadius) return true;
+  if (lengthSquared < 1e-12) return false;
+  for (const y of [lo, hi]) {
+    const t = Math.max(0, Math.min(1, ((player.x - from.x) * vx + (y - from.y) * vy + (player.z - from.z) * vz) / lengthSquared));
+    if (distanceAt(t) <= expandedRadius) return true;
+  }
+  const horizontalLength = vx * vx + vz * vz;
+  if (horizontalLength < 1e-12) return false;
+  const t = Math.max(0, Math.min(1, ((player.x - from.x) * vx + (player.z - from.z) * vz) / horizontalLength));
+  return distanceAt(t) <= expandedRadius;
 }
 
 function hashString(value: string) {

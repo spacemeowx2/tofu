@@ -40,6 +40,7 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 
 - 当前 tick；
 - `players` 与 `bullets`；
+- 玩家墨水槽、补墨/回血等待时间、训练靶以及正在进行的定向墨斑扩散（世界快照版本 5）；
 - 每位玩家的射速 cooldown、子弹序号、死亡/复活倒计时和出生槽位；
 - `TiledInkField`；
 - 当前 `LevelDefinition`；
@@ -57,7 +58,7 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 
 ### 墨水归属与同步
 
-`TiledInkField` 为地面和每个墙面保存：
+`TiledInkField` 为地面、每个墙面和每个平台顶面保存：
 
 - `owners: Uint8Array`：`0/1` 为队伍，`255` 为中性；
 - `ticks: Uint32Array`：每格最后一次独立墨水 Lamport revision（保留旧字段名以维持 tile 格式）；
@@ -68,7 +69,7 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 
 每个 packet 携带发送方的 `inkRevision` 上界，但普通 header 只做兼容性与范围校验；只有已经通过结构、owner、坐标和 hash 验证的 paint/tile 才能推进本地 revision，避免无关包把计数器推到上限。本地涂墨使用 `max(accepted)+1`，并限制在 tile 实际使用的 `Uint32` 范围。收到 tile 时会验证维度、边界、owner 值、revision、writer、数组长度和 hash。较旧 revision 不能覆盖较新格子；同 revision 由稳定 writer 决胜。没有改变任何格子的相同/陈旧 tile 不会重新标 dirty，避免 peer 之间持续回声。`GameWorld.applyPaint()` 返回裁决后的局部权威 tile，GPU 只消费这些 tile；原始 stamp 不能绕过 ownership 写永久纹理。潜水和爬墙只查询 `TiledInkField`，不读取像素颜色。
 
-永久墨面只有一条表现路径：每个可涂面一张与玩法 grid 同尺寸的双通道 mask，`InkTextureRenderer` 用双线性采样和一个 shader 重建平滑边缘、湿润高光与边缘法线。`InkFluidVfx` 只在 impact 时用 Babylon 自带 `FluidRenderer` 生成固定容量、短寿命的体积喷溅；粒子从真实命中点沿入射方向展开并沉降，稳定 tile 延迟约 180ms 显露，但 VFX 绝不写回 tile。空闲时移除 FluidRenderer render object，不持续支付 depth/thickness/blur 成本。这样重连和局部快照只重建稳定墨面，瞬时效果丢失也不会改变玩法或归属。
+永久墨面只有一条表现路径：每个可涂面一张与玩法 grid 同尺寸的双通道 mask，`InkTextureRenderer` 用平滑采样和 shader 重建边缘、湿润高光与法线，并在有细分的水平表面上表现少量几何厚度。着弹后 `GameWorld` 在 180ms 内分步扩张墨斑，每步产生普通 paint 事件（协议版本 7 的 `flow` stamp），立即更新 tile 和画面；扩散状态进入 snapshot/restore。沿途墨滴是独立 projectile，碰撞前不能涂色。`InkFluidVfx` 只在 impact 时用 Babylon 自带 `FluidRenderer` 生成固定容量、短寿命的体积喷溅，VFX 不写回 tile。空闲时移除 FluidRenderer render object，不持续支付 depth/thickness/blur 成本。瞬时效果丢失不会改变玩法或归属。
 
 运行时每两秒发送 dirty tile，并交换分块 tile hash；接收端只向具体 peer 请求 hash 不同的 tile。hash、请求和 8×8 tile 都受单包数量上限约束，避免 relay/WebRTC DataChannel payload 突增。新 peer 与恢复连接使用同一套局部快照协议，不再发送完整世界墨水。
 
@@ -80,7 +81,7 @@ Hello World 最初把输入、摄像机、固定步长、网络包、场景构�
 - 可附着墙面探测；
 - 高速墨水弹 shape cast。
 
-`RapierPhysicsAdapter` 从 `LevelDefinition` 创建静态 cuboid collider，使用 capsule/ball shape cast，且不创建动态子弹刚体。生产应用必须先完成 Rapier 初始化才会构造 `GameWorld` 和启动循环；失败时停在错误状态，不允许静默切到另一种物理。`AnalyticPhysicsAdapter` 只保留为显式测试工具。完整快照携带 `physicsKind`，实时 packet header 携带并校验 `contentId`、`levelId` 和 `physicsKind`；恢复或实时联机都会拒绝不兼容世界，peer 不会在不知情时混用 adapter/关卡/内容。
+`RapierPhysicsAdapter` 从 `LevelDefinition` 创建地面及静态 cuboid collider，使用 Rapier 自带的 KinematicCharacterController 修正 capsule 的三维位移，支持平台落地与跳跃。环境弹道碰撞使用 ball shape cast，玩家和训练靶使用扫掠 capsule 命中检查，不创建动态子弹刚体。生产应用必须先完成 Rapier 初始化才会构造 `GameWorld` 和启动循环；失败时停在错误状态，不允许静默切到另一种物理。`AnalyticPhysicsAdapter` 只保留为显式测试工具。完整快照携带 `physicsKind`，实时 packet header 携带并校验 `contentId`、`levelId` 和 `physicsKind`；恢复或实时联机都会拒绝不兼容世界，peer 不会在不知情时混用 adapter/关卡/内容。
 
 ## 状态流
 

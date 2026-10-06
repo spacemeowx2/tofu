@@ -4,7 +4,7 @@ export type GameRuntimeOptions = {
   maintenanceIntervalSeconds: number;
   onFixedStep(dt: number): void;
   onStateSend(): void;
-  onFrame(dt: number): void;
+  onFrame(dt: number, interpolation: number): void;
   onMaintenance(): void;
 };
 
@@ -32,6 +32,6 @@ export class GameRuntime {
       this.maintenanceAccumulator %= this.options.maintenanceIntervalSeconds;
       this.options.onMaintenance();
     }
-    this.options.onFrame(dt);
+    this.options.onFrame(dt, this.simulationAccumulator / this.options.fixedStepSeconds);
   }
 }

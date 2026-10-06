@@ -15,8 +15,8 @@ const IMPACT_LANES = [-1, -0.66, -0.33, 0, 0.33, 0.66, 1] as const;
 const GRAVITY = 8.5;
 const SURFACE_CLEARANCE = 0.035;
 const TEAM_COLORS = [
-  [0.96, 0.36, 0.12, 1],
-  [0.08, 0.64, 0.68, 1]
+  [1, 0.388, 0.169, 1],
+  [0.086, 0.710, 0.808, 1]
 ] as const;
 
 type InkParticle = {
@@ -173,7 +173,7 @@ export class InkFluidVfx {
   private surfaceBasis(stamp: PaintStamp) {
     const cos = Math.cos(stamp.rotation);
     const sin = Math.sin(stamp.rotation);
-    if (stamp.surfaceId === "ground") {
+    if (stamp.surfaceId === "ground" || stamp.surfaceId.startsWith("top-")) {
       const normal = new Vector3(0, 1, 0);
       const forward = new Vector3(cos, 0, sin).normalize();
       return { normal, forward, side: Vector3.Cross(normal, forward).normalize() };

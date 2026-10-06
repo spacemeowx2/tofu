@@ -23,11 +23,12 @@ export interface PhysicsAdapter {
   readonly kind: PhysicsKind;
   resolvePlayerMovement(
     player: PlayerSnapshot,
-    delta: { x: number; z: number },
+    delta: Vec3,
     collider: { radius: number; height: number }
-  ): { x: number; z: number; blockedX: boolean; blockedZ: boolean };
+  ): { x: number; y: number; z: number; blockedX: boolean; blockedY: boolean; blockedZ: boolean; grounded: boolean };
   findWallContact(player: PlayerSnapshot): WallContact | undefined;
   castProjectile(from: Vec3, to: Vec3, radius: number): ProjectileImpact | undefined;
+  removePlayer(id: string): void;
   dispose(): void;
 }
 
@@ -41,7 +42,7 @@ export class AnalyticPhysicsAdapter implements PhysicsAdapter {
 
   resolvePlayerMovement(
     player: PlayerSnapshot,
-    delta: { x: number; z: number },
+    delta: Vec3,
     collider: { radius: number; height: number }
   ) {
     const min = -this.level.halfSize + collider.radius;
@@ -50,11 +51,19 @@ export class AnalyticPhysicsAdapter implements PhysicsAdapter {
     const x = this.hitsObstacle(desiredX, player.z, player.y, collider.radius, collider.height) ? player.x : desiredX;
     const desiredZ = clamp(player.z + delta.z, min, max);
     const z = this.hitsObstacle(x, desiredZ, player.y, collider.radius, collider.height) ? player.z : desiredZ;
+    let floor = 0;
+    for (const box of this.level.obstacles) {
+      if (player.y >= box.height - 0.02 && Math.abs(x - box.x) < box.width / 2 && Math.abs(z - box.z) < box.depth / 2) floor = Math.max(floor, box.height);
+    }
+    const y = Math.max(floor, player.y + delta.y);
     return {
       x,
+      y,
       z,
       blockedX: x !== desiredX,
-      blockedZ: z !== desiredZ
+      blockedY: y !== player.y + delta.y,
+      blockedZ: z !== desiredZ,
+      grounded: y <= floor + 0.001
     };
   }
 
@@ -84,6 +93,18 @@ export class AnalyticPhysicsAdapter implements PhysicsAdapter {
 
   castProjectile(from: Vec3, to: Vec3, radius: number): ProjectileImpact | undefined {
     let closest: ProjectileImpact | undefined;
+    const floors = [
+      { id: "ground" as const, y: 0, x: 0, z: 0, width: this.level.halfSize * 2, depth: this.level.halfSize * 2 },
+      ...this.level.obstacles.map((box, index) => ({ ...box, id: `top-${index}` as const, y: box.height }))
+    ];
+    for (const floor of floors) {
+      if (from.y < floor.y + radius || to.y > floor.y + radius || from.y === to.y) continue;
+      const amount = (from.y - floor.y - radius) / (from.y - to.y);
+      const x = from.x + (to.x - from.x) * amount;
+      const z = from.z + (to.z - from.z) * amount;
+      if (Math.abs(x - floor.x) > floor.width / 2 || Math.abs(z - floor.z) > floor.depth / 2 || (closest && amount >= closest.amount)) continue;
+      closest = { amount, impact: { surfaceId: floor.id, x, y: floor.y, z } };
+    }
     for (const surface of this.surfaces) {
       const fromAxis = surface.axis === "x" ? from.x : from.z;
       const toAxis = surface.axis === "x" ? to.x : to.z;
@@ -113,6 +134,7 @@ export class AnalyticPhysicsAdapter implements PhysicsAdapter {
   }
 
   dispose() {}
+  removePlayer(_id: string) {}
 
   private hitsObstacle(x: number, z: number, y: number, radius: number, height: number) {
     return this.level.obstacles.some((box) => {
